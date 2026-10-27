@@ -27,7 +27,11 @@ export function ActionsPanel({ accounts, onDeposit, onTransfer }: Props) {
           }
         }}
       >
-        <select value={depositTarget} onChange={(e) => setDepositTarget(e.target.value)}>
+        <select
+          aria-label="Account to deposit into"
+          value={depositTarget}
+          onChange={(e) => setDepositTarget(e.target.value)}
+        >
           <option value="">Select account</option>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
@@ -56,7 +60,7 @@ export function ActionsPanel({ accounts, onDeposit, onTransfer }: Props) {
           }
         }}
       >
-        <select value={from} onChange={(e) => setFrom(e.target.value)}>
+        <select aria-label="Transfer from account" value={from} onChange={(e) => setFrom(e.target.value)}>
           <option value="">From</option>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
@@ -64,7 +68,7 @@ export function ActionsPanel({ accounts, onDeposit, onTransfer }: Props) {
             </option>
           ))}
         </select>
-        <select value={to} onChange={(e) => setTo(e.target.value)}>
+        <select aria-label="Transfer to account" value={to} onChange={(e) => setTo(e.target.value)}>
           <option value="">To</option>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
