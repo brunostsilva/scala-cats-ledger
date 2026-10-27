@@ -4,7 +4,7 @@ import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.syntax.*
 import org.http4s.{EntityDecoder, EntityEncoder, HttpRoutes}
-import org.http4s.circe.{jsonEncoderOf, jsonOf}
+import org.http4s.circe.{jsonEncoder, jsonEncoderOf, jsonOf}
 import org.http4s.dsl.Http4sDsl
 import ledger.domain.*
 import ledger.service.LedgerService
