@@ -1,0 +1,21 @@
+# Scala / sbt
+target/
+project/target/
+project/project/
+.bloop/
+.metals/
+.bsp/
+*.class
+
+# Node / frontend
+node_modules/
+frontend/dist/
+.vite/
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
