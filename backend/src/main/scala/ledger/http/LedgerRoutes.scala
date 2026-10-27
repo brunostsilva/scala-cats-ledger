@@ -26,12 +26,14 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
       UnprocessableEntity(
         JsonCodecs
           .ErrorResponse(
-            s"Account ${id.asString} has insufficient funds: balance=${balance.toDouble}, requested=${requested.toDouble}"
+            s"Account ${id.asString} has insufficient funds: balance=${balance.toBigDecimal}, requested=${requested.toBigDecimal}"
           )
           .asJson
       )
     case LedgerError.SameAccountTransfer(id) =>
       UnprocessableEntity(JsonCodecs.ErrorResponse(s"Cannot transfer to the same account: ${id.asString}").asJson)
+    case LedgerError.InvalidAmount(message) =>
+      UnprocessableEntity(JsonCodecs.ErrorResponse(message).asJson)
 
   val routes: HttpRoutes[F] = HttpRoutes.of[F] {
     case req @ POST -> Root / "accounts" =>
@@ -56,7 +58,7 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
         case Right(id) =>
           for
             body <- req.as[JsonCodecs.AmountRequest]
-            resp <- Money.fromCents(Math.round(body.amount * 100)) match
+            resp <- Money.fromDecimal(body.amount) match
                       case Left(err) => UnprocessableEntity(JsonCodecs.ErrorResponse(err).asJson)
                       case Right(amount) =>
                         service.deposit(id, amount).flatMap {
@@ -68,7 +70,7 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
     case req @ POST -> Root / "transfers" =>
       for
         body <- req.as[JsonCodecs.TransferRequest]
-        resp <- (AccountId.fromString(body.from), AccountId.fromString(body.to), Money.fromCents(Math.round(body.amount * 100))) match
+        resp <- (AccountId.fromString(body.from), AccountId.fromString(body.to), Money.fromDecimal(body.amount)) match
                   case (Right(from), Right(to), Right(amount)) =>
                     service.transfer(from, to, amount).flatMap {
                       case Right((updatedFrom, updatedTo)) => Ok(JsonCodecs.TransferResponse(updatedFrom, updatedTo))

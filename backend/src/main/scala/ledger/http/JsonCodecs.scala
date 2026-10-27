@@ -5,12 +5,14 @@ import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import ledger.domain.*
 
 /** JSON wire format for the API. Money crosses the HTTP boundary as a decimal amount
-  * (e.g. 10.50) while being stored internally as integer cents.
+  * (e.g. 10.50) while being stored internally as integer cents. Amounts are decoded via
+  * `BigDecimal` (not `Double`) to avoid floating-point precision loss and silently saturated
+  * out-of-range values.
   */
 object JsonCodecs:
 
-  given Encoder[Money] = Encoder.encodeDouble.contramap(_.toDouble)
-  given Decoder[Money] = Decoder.decodeDouble.emap(d => Money.fromCents(Math.round(d * 100)))
+  given Encoder[Money] = Encoder.encodeBigDecimal.contramap(_.toBigDecimal)
+  given Decoder[Money] = Decoder.decodeBigDecimal.emap(Money.fromDecimal)
 
   given Encoder[AccountId] = Encoder.encodeString.contramap(_.asString)
   given Decoder[AccountId] = Decoder.decodeString.emap(AccountId.fromString)
@@ -32,11 +34,11 @@ object JsonCodecs:
   given Encoder[CreateAccountRequest] = deriveEncoder
   given Decoder[CreateAccountRequest] = deriveDecoder
 
-  final case class AmountRequest(amount: Double)
+  final case class AmountRequest(amount: BigDecimal)
   given Encoder[AmountRequest] = deriveEncoder
   given Decoder[AmountRequest] = deriveDecoder
 
-  final case class TransferRequest(from: String, to: String, amount: Double)
+  final case class TransferRequest(from: String, to: String, amount: BigDecimal)
   given Encoder[TransferRequest] = deriveEncoder
   given Decoder[TransferRequest] = deriveDecoder
 
