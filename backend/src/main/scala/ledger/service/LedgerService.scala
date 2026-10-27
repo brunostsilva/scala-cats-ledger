@@ -47,13 +47,16 @@ object LedgerService:
                       state.accounts.get(id) match
                         case None => (state, Left(LedgerError.AccountNotFound(id)))
                         case Some(acc) =>
-                          val updated = acc.copy(balance = acc.balance + amount)
-                          val tx = Transaction(txId, id, None, TransactionType.Deposit, amount, updated.balance, now)
-                          val newState = state.copy(
-                            accounts = state.accounts.updated(id, updated),
-                            transactions = state.transactions.updatedWith(id)(txs => Some(tx :: txs.getOrElse(Nil)))
-                          )
-                          (newState, Right(updated))
+                          acc.balance + amount match
+                            case Left(msg) => (state, Left(LedgerError.InvalidAmount(msg)))
+                            case Right(newBalance) =>
+                              val updated = acc.copy(balance = newBalance)
+                              val tx = Transaction(txId, id, None, TransactionType.Deposit, amount, updated.balance, now)
+                              val newState = state.copy(
+                                accounts = state.accounts.updated(id, updated),
+                                transactions = state.transactions.updatedWith(id)(txs => Some(tx :: txs.getOrElse(Nil)))
+                              )
+                              (newState, Right(updated))
                     }
         yield result
 
@@ -71,13 +74,14 @@ object LedgerService:
                             newFromBalance <- (fromAcc.balance - amount).left.map(_ =>
                                                 LedgerError.InsufficientFunds(from, fromAcc.balance, amount)
                                               )
-                          yield (fromAcc, toAcc, newFromBalance)
+                            newToBalance   <- (toAcc.balance + amount).left.map(LedgerError.InvalidAmount.apply)
+                          yield (fromAcc, toAcc, newFromBalance, newToBalance)
 
                         attempt match
                           case Left(err) => (state, Left(err))
-                          case Right((fromAcc, toAcc, newFromBalance)) =>
+                          case Right((fromAcc, toAcc, newFromBalance, newToBalance)) =>
                             val updatedFrom = fromAcc.copy(balance = newFromBalance)
-                            val updatedTo   = toAcc.copy(balance = toAcc.balance + amount)
+                            val updatedTo   = toAcc.copy(balance = newToBalance)
                             val txOut = Transaction(txId, from, Some(to), TransactionType.Transfer, amount, updatedFrom.balance, now)
                             val txIn  = Transaction(txId, to, Some(from), TransactionType.Transfer, amount, updatedTo.balance, now)
                             val newState = state.copy(

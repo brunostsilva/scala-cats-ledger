@@ -20,6 +20,17 @@ class LedgerServiceSpec extends CatsEffectSuite:
     yield assertEquals(updated, Right(account.copy(balance = amount)))
   }
 
+  test("deposit fails when the resulting balance would overflow") {
+    for
+      service <- newService
+      alice   <- service.createAccount("Alice")
+      _       <- service.deposit(alice.id, cents(Long.MaxValue))
+      result  <- service.deposit(alice.id, cents(1))
+    yield result match
+      case Left(LedgerError.InvalidAmount(_)) => ()
+      case other                              => fail(s"expected InvalidAmount, got $other")
+  }
+
   test("deposit fails for an unknown account") {
     for
       service <- newService
