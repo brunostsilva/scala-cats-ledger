@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Frontend (React + Vite). Minor/patch bumps are grouped into one weekly PR;
+  # majors (e.g. React, Vite) come as separate PRs so they can be reviewed on their own.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+      include: scope
+
+  # Actions used by .github/workflows (checkout, setup-java, setup-sbt, setup-node).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope
+
+# The sbt backend is not covered: Dependabot's sbt ecosystem is still under development in
+# dependabot-core. Scala Steward is the usual tool for keeping build.sbt up to date.
