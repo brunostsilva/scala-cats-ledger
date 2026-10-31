@@ -62,6 +62,16 @@ cd backend
 sbt test
 ```
 
+```bash
+cd frontend
+npm test          # Vitest + Testing Library (jsdom), once
+npm run test:watch
+```
+
+The frontend suite covers the API client (URLs, payloads and error handling, with `fetch` stubbed),
+every component, and the `App` flows (create, deposit, transfer, select, error banner) against a
+mocked API. It needs Node 22.22+ or 24.15+.
+
 ## API
 
 | Method | Path                           | Body                                  | Description                       |
@@ -74,4 +84,5 @@ sbt test
 
 ## Tech stack
 
-Scala 3 · Cats Effect 3 · http4s · circe · munit-cats-effect · React · TypeScript · Vite
+Scala 3 · Cats Effect 3 · http4s · circe · munit-cats-effect · React 19 · TypeScript · Vite 8 · Vitest ·
+Testing Library
