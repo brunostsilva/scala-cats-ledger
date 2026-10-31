@@ -1,7 +1,6 @@
 version: 2
 updates:
-  # Frontend (React + Vite). Minor/patch bumps are grouped into one weekly PR;
-  # majors (e.g. React, Vite) come as separate PRs so they can be reviewed on their own.
+  # Frontend (React + Vite).
   - package-ecosystem: npm
     directory: /frontend
     schedule:
@@ -9,6 +8,17 @@ updates:
       day: monday
     open-pull-requests-limit: 5
     groups:
+      # Packages that must move together: react-dom requires the same react major, the
+      # @types packages must match it, and @vitejs/plugin-react pins a Vite major. Grouping
+      # them (for every update type, majors included) avoids single-package PRs that can't
+      # install, e.g. react-dom 19 next to react 18 (npm ERESOLVE).
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+      vite:
+        patterns: ["vite", "@vitejs/*", "vitest", "@vitest/*"]
+      testing-library:
+        patterns: ["@testing-library/*", "jsdom"]
+      # Everything else: minor/patch bumps in one weekly PR; other majors stay individual.
       npm-minor-and-patch:
         update-types: [minor, patch]
     commit-message:
