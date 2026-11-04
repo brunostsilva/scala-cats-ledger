@@ -37,6 +37,8 @@ A minimal React UI to create accounts, deposit, transfer between accounts, and v
 
 ### Backend
 
+Requires **JDK 25** (Temurin recommended) and sbt; the build uses Scala 3.10.
+
 ```bash
 cd backend
 sbt run
@@ -62,6 +64,18 @@ cd backend
 sbt test
 ```
 
+The backend suite (munit + munit-cats-effect) covers:
+
+- **Domain:** `Money` (cents, half-up rounding of decimals, range limits, overflow-safe addition,
+  no negative balances) and `AccountId` parsing.
+- **JSON codecs:** the wire format of every type, including money as a decimal amount and
+  validation errors.
+- **HTTP API end to end:** every route with its success and error statuses (201/200/400/404/422)
+  and messages, running the real routes over the real in-memory service.
+- **Service:** deposits, transfers, transaction history, and **concurrency**: parallel deposits are
+  all applied, and parallel transfers never overdraw an account, since every mutation is an atomic
+  `Ref` update.
+
 ```bash
 cd frontend
 npm test          # Vitest + Testing Library (jsdom), once
@@ -84,5 +98,5 @@ mocked API. It needs Node 22.22+ or 24.15+.
 
 ## Tech stack
 
-Scala 3 · Cats Effect 3 · http4s · circe · munit-cats-effect · React 19 · TypeScript · Vite 8 · Vitest ·
-Testing Library
+Scala 3.10 · JDK 25 · Cats Effect 3 · http4s · circe · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
+Vitest · Testing Library
