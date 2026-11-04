@@ -1,7 +1,6 @@
 package ledger.http
 
-import io.circe.{Decoder, Encoder}
-import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
+import io.circe.{Codec, Decoder, Encoder}
 import ledger.domain.*
 
 /** JSON wire format for the API. Money crosses the HTTP boundary as a decimal amount
@@ -11,41 +10,32 @@ import ledger.domain.*
   */
 object JsonCodecs:
 
-  given Encoder[Money] = Encoder.encodeBigDecimal.contramap(_.toBigDecimal)
-  given Decoder[Money] = Decoder.decodeBigDecimal.emap(Money.fromDecimal)
+  given Codec[Money] =
+    Codec.from(Decoder.decodeBigDecimal.emap(Money.fromDecimal), Encoder.encodeBigDecimal.contramap(_.toBigDecimal))
 
-  given Encoder[AccountId] = Encoder.encodeString.contramap(_.asString)
-  given Decoder[AccountId] = Decoder.decodeString.emap(AccountId.fromString)
+  given Codec[AccountId] =
+    Codec.from(Decoder.decodeString.emap(AccountId.fromString), Encoder.encodeString.contramap(_.asString))
 
-  given Encoder[TransactionType] = Encoder.encodeString.contramap(_.toString)
-  given Decoder[TransactionType] = Decoder.decodeString.emap {
-    case "Deposit"  => Right(TransactionType.Deposit)
-    case "Transfer" => Right(TransactionType.Transfer)
-    case other      => Left(s"Unknown transaction type: $other")
-  }
+  given Codec[TransactionType] = Codec.from(
+    Decoder.decodeString.emap {
+      case "Deposit"  => Right(TransactionType.Deposit)
+      case "Transfer" => Right(TransactionType.Transfer)
+      case other      => Left(s"Unknown transaction type: $other")
+    },
+    Encoder.encodeString.contramap(_.toString)
+  )
 
-  given Encoder[Account] = deriveEncoder
-  given Decoder[Account] = deriveDecoder
+  // The domain model stays free of JSON concerns (and of the wire format of Money and AccountId
+  // defined above), so its codecs are derived here instead of with `derives` on the case classes.
+  given Codec.AsObject[Account]     = Codec.AsObject.derived
+  given Codec.AsObject[Transaction] = Codec.AsObject.derived
 
-  given Encoder[Transaction] = deriveEncoder
-  given Decoder[Transaction] = deriveDecoder
+  final case class CreateAccountRequest(owner: String) derives Codec.AsObject
 
-  final case class CreateAccountRequest(owner: String)
-  given Encoder[CreateAccountRequest] = deriveEncoder
-  given Decoder[CreateAccountRequest] = deriveDecoder
+  final case class AmountRequest(amount: BigDecimal) derives Codec.AsObject
 
-  final case class AmountRequest(amount: BigDecimal)
-  given Encoder[AmountRequest] = deriveEncoder
-  given Decoder[AmountRequest] = deriveDecoder
+  final case class TransferRequest(from: String, to: String, amount: BigDecimal) derives Codec.AsObject
 
-  final case class TransferRequest(from: String, to: String, amount: BigDecimal)
-  given Encoder[TransferRequest] = deriveEncoder
-  given Decoder[TransferRequest] = deriveDecoder
+  final case class TransferResponse(from: Account, to: Account) derives Codec.AsObject
 
-  final case class TransferResponse(from: Account, to: Account)
-  given Encoder[TransferResponse] = deriveEncoder
-  given Decoder[TransferResponse] = deriveDecoder
-
-  final case class ErrorResponse(message: String)
-  given Encoder[ErrorResponse] = deriveEncoder
-  given Decoder[ErrorResponse] = deriveDecoder
+  final case class ErrorResponse(message: String) derives Codec.AsObject

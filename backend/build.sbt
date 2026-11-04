@@ -13,7 +13,6 @@ lazy val root = (project in file("."))
       "org.http4s"    %% "http4s-dsl"          % http4sVersion,
       "org.http4s"    %% "http4s-circe"        % http4sVersion,
       "io.circe"      %% "circe-core"          % circeVersion,
-      "io.circe"      %% "circe-generic"       % circeVersion,
       "org.scalameta" %% "munit"               % "1.3.6" % Test,
       "org.typelevel" %% "munit-cats-effect"   % "2.2.1" % Test
     ),
