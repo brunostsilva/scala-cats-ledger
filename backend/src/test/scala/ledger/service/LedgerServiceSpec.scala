@@ -1,6 +1,7 @@
 package ledger.service
 
 import cats.effect.{IO, Ref}
+import cats.syntax.all.*
 import ledger.domain.*
 import munit.CatsEffectSuite
 
@@ -87,6 +88,93 @@ class LedgerServiceSpec extends CatsEffectSuite:
     yield result match
       case Left(LedgerError.SameAccountTransfer(_)) => ()
       case other                                    => fail(s"expected SameAccountTransfer, got $other")
+  }
+
+  test("getAccount finds created accounts and reports unknown ones") {
+    for
+      service <- newService
+      alice   <- service.createAccount("Alice")
+      unknown <- AccountId.random[IO]
+      found   <- service.getAccount(alice.id)
+      missing <- service.getAccount(unknown)
+    yield
+      assertEquals(found, Right(alice))
+      assertEquals(missing, Left(LedgerError.AccountNotFound(unknown)))
+  }
+
+  test("a failed transfer leaves both balances and histories untouched") {
+    for
+      service <- newService
+      alice   <- service.createAccount("Alice")
+      bob     <- service.createAccount("Bob")
+      _       <- service.deposit(alice.id, cents(100))
+      result  <- service.transfer(alice.id, bob.id, cents(101))
+      aliceAfter <- service.getAccount(alice.id)
+      bobTxs     <- service.transactionsFor(bob.id)
+    yield
+      assertEquals(result, Left(LedgerError.InsufficientFunds(alice.id, cents(100), cents(101))))
+      assertEquals(aliceAfter.map(_.balance.cents), Right(100L))
+      assertEquals(bobTxs, Right(Nil))
+  }
+
+  test("a transfer is recorded on both sides with the counterparty and resulting balances") {
+    for
+      service  <- newService
+      alice    <- service.createAccount("Alice")
+      bob      <- service.createAccount("Bob")
+      _        <- service.deposit(alice.id, cents(100))
+      _        <- service.transfer(alice.id, bob.id, cents(30))
+      aliceTxs <- service.transactionsFor(alice.id)
+      bobTxs   <- service.transactionsFor(bob.id)
+    yield (aliceTxs, bobTxs) match
+      case (Right(out :: _), Right(in :: Nil)) =>
+        assertEquals(out.txType, TransactionType.Transfer)
+        assertEquals(out.counterpartyId, Some(bob.id))
+        assertEquals(out.balanceAfter.cents, 70L)
+        assertEquals(in.txType, TransactionType.Transfer)
+        assertEquals(in.counterpartyId, Some(alice.id))
+        assertEquals(in.balanceAfter.cents, 30L)
+        assertEquals(in.id, out.id, "both legs share the transfer id")
+      case other => fail(s"expected one transfer on each side, got $other")
+  }
+
+  test("transactionsFor fails for an unknown account and is empty for a new one") {
+    for
+      service <- newService
+      alice   <- service.createAccount("Alice")
+      unknown <- AccountId.random[IO]
+      empty   <- service.transactionsFor(alice.id)
+      missing <- service.transactionsFor(unknown)
+    yield
+      assertEquals(empty, Right(Nil))
+      assertEquals(missing, Left(LedgerError.AccountNotFound(unknown)))
+  }
+
+  test("concurrent deposits are all applied: the Ref update is atomic") {
+    for
+      service <- newService
+      alice   <- service.createAccount("Alice")
+      _       <- List.fill(200)(service.deposit(alice.id, cents(1))).parSequence
+      after   <- service.getAccount(alice.id)
+      txs     <- service.transactionsFor(alice.id)
+    yield
+      assertEquals(after.map(_.balance.cents), Right(200L))
+      assertEquals(txs.map(_.size), Right(200))
+  }
+
+  test("concurrent transfers never overdraw the source account") {
+    for
+      service <- newService
+      alice   <- service.createAccount("Alice")
+      bob     <- service.createAccount("Bob")
+      _       <- service.deposit(alice.id, cents(100))
+      results <- List.fill(50)(service.transfer(alice.id, bob.id, cents(10))).parSequence
+      aliceAfter <- service.getAccount(alice.id)
+      bobAfter   <- service.getAccount(bob.id)
+    yield
+      assertEquals(results.count(_.isRight), 10)
+      assertEquals(aliceAfter.map(_.balance.cents), Right(0L))
+      assertEquals(bobAfter.map(_.balance.cents), Right(100L))
   }
 
   test("transactions are recorded in order, most recent first") {
