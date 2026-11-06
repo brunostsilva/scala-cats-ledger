@@ -1,11 +1,18 @@
 package ledger.service
 
-import cats.effect.{IO, Ref}
+import cats.effect.{IO, Ref, Sync}
 import cats.syntax.all.*
 import ledger.domain.*
 import munit.CatsEffectSuite
+import org.typelevel.log4cats.LoggerFactory
+import org.typelevel.log4cats.noop.NoOpFactory
+import org.typelevel.log4cats.testing.StructuredTestingLogger
+import ledger.RecordingLoggerFactory
 
 class LedgerServiceSpec extends CatsEffectSuite:
+
+  /** Silent by default; the last test records the log lines with its own factory. */
+  private given LoggerFactory[IO] = NoOpFactory[IO]
 
   private def newService: IO[LedgerService[IO]] =
     Ref.of[IO, LedgerState](LedgerState.empty).map(LedgerService.inMemory[IO])
@@ -187,4 +194,23 @@ class LedgerServiceSpec extends CatsEffectSuite:
     yield result match
       case Right(txs) => assertEquals(txs.map(_.amount.cents), List(50L, 100L))
       case Left(err)  => fail(s"expected success, got $err")
+  }
+
+  test("deposits and transfers log one line before creating the transaction") {
+    val logger = StructuredTestingLogger.impl[IO]()
+    for
+      ref    <- Ref.of[IO, LedgerState](LedgerState.empty)
+      service = LedgerService.inMemory[IO](ref)(using Sync[IO], RecordingLoggerFactory(logger))
+      alice  <- service.createAccount("Alice")
+      bob    <- service.createAccount("Bob")
+      _      <- service.deposit(alice.id, cents(500))
+      _      <- service.transfer(alice.id, bob.id, cents(200))
+      logged <- logger.logged
+    yield assertEquals(
+      logged.map(_.message),
+      Vector(
+        s"Creating deposit transaction on account ${alice.id.asString}",
+        s"Creating transfer transaction from account ${alice.id.asString} to ${bob.id.asString}"
+      )
+    )
   }

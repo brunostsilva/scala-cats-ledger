@@ -1,0 +1,61 @@
+<configuration>
+  <!--
+    Readable text by default. LOG_FORMAT=json switches to one JSON object per line, with the
+    structured context of each log call (event, account.id, http.request.id...) under "mdc".
+    Main refuses to start with any other LOG_FORMAT, since it would leave the root logger without
+    an appender. LOG_LEVEL changes the root level (INFO by default).
+  -->
+
+  <!--
+    Only print Logback's own status messages when they are errors. Without a listener, any warning
+    while loading this file (such as the unused async appender of the other LOG_FORMAT) makes Logback
+    dump its whole internal status on startup.
+  -->
+  <statusListener class="ledger.ErrorsOnlyStatusListener" />
+
+  <!-- Flush the async queues below when the JVM stops, so the last lines are not lost. -->
+  <shutdownHook class="ch.qos.logback.core.hook.DefaultShutdownHook" />
+
+  <appender name="text" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %-18logger{24} %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <appender name="json" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="ch.qos.logback.classic.encoder.JsonEncoder">
+      <withFormattedMessage>true</withFormattedMessage>
+      <withMessage>false</withMessage>
+      <withArguments>false</withArguments>
+      <withContext>false</withContext>
+      <withSequenceNumber>false</withSequenceNumber>
+      <withNanoseconds>false</withNanoseconds>
+    </encoder>
+  </appender>
+
+  <!--
+    log4cats runs each log call synchronously on the Cats Effect compute pool, so writing straight
+    to the console would make request fibers wait on stdout. The async appenders only enqueue the
+    event (with a copy of its MDC); a background thread does the I/O.
+    discardingThreshold=0: never drop events. The default drops INFO and below when the queue is
+    80% full, which would silently lose audit lines.
+    neverBlock=false: when the queue is full, callers wait (backpressure) instead of losing lines.
+  -->
+  <appender name="async-text" class="ch.qos.logback.classic.AsyncAppender">
+    <queueSize>8192</queueSize>
+    <discardingThreshold>0</discardingThreshold>
+    <neverBlock>false</neverBlock>
+    <appender-ref ref="text" />
+  </appender>
+
+  <appender name="async-json" class="ch.qos.logback.classic.AsyncAppender">
+    <queueSize>8192</queueSize>
+    <discardingThreshold>0</discardingThreshold>
+    <neverBlock>false</neverBlock>
+    <appender-ref ref="json" />
+  </appender>
+
+  <root level="${LOG_LEVEL:-INFO}">
+    <appender-ref ref="async-${LOG_FORMAT:-text}" />
+  </root>
+</configuration>

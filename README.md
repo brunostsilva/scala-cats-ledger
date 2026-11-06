@@ -23,11 +23,13 @@ an operation can fail (account not found, insufficient funds, self-transfer).
 **Service** (`ledger.service`)
 `LedgerService` holds all business logic. The in-memory implementation keeps the entire ledger state in
 a single `cats.effect.Ref`, so every mutation (deposit, transfer) is applied atomically via `Ref.modify`
-— no locks, no race conditions, even under concurrent requests.
+— no locks, no race conditions, even under concurrent requests. `AuditedLedgerService` decorates it
+with an audit trail (see [Logging](#logging)), so the business logic itself never logs.
 
 **HTTP** (`ledger.http`)
 An `http4s` API exposing the service over JSON (`circe`). Money crosses the wire as a decimal amount
-(e.g. `10.50`) for a friendlier contract, while staying integer cents internally.
+(e.g. `10.50`) for a friendlier contract, while staying integer cents internally. Every request gets a
+request id and one access log line.
 
 **Frontend** (`frontend/`)
 A minimal React UI to create accounts, deposit, transfer between accounts, and view transaction history
@@ -72,9 +74,20 @@ The backend suite (munit + munit-cats-effect) covers:
   validation errors.
 - **HTTP API end to end:** every route with its success and error statuses (201/200/400/404/422)
   and messages, running the real routes over the real in-memory service.
+- **Real server:** `LedgerServerSpec` starts the same wiring as `Main` (`LedgerServer.resource`) on a
+  free port and calls it with an HTTP client: deposits and transfers through routes, service and
+  audit, request ids and CORS headers in the responses, and the matching log lines. No Docker needed.
+- **Real logging stack:** `RealLoggingSpec` runs the server with the same logging as `Main`
+  (log4cats → SLF4J → Logback with `logback.xml`), so its log lines are printed in the `sbt test`
+  output, in CI too, and checks what Logback received: every layer, structured fields in the MDC,
+  no owner names. The other tests record log lines in memory instead.
 - **Service:** deposits, transfers, transaction history, and **concurrency**: parallel deposits are
   all applied, and parallel transfers never overdraw an account, since every mutation is an atomic
   `Ref` update.
+- **Logging:** the audit trail (events, ids, amounts, reason codes, and no owner names or balances)
+  and the access log (request id reused or generated, no query strings or bodies, exceptions
+  logged as 500s) with log4cats' `StructuredTestingLogger`, plus the Logback configuration in
+  text and JSON mode.
 
 ```bash
 cd frontend
@@ -85,6 +98,56 @@ npm run test:watch
 The frontend suite covers the API client (URLs, payloads and error handling, with `fetch` stubbed),
 every component, and the `App` flows (create, deposit, transfer, select, error banner) against a
 mocked API. It needs Node 22.22+ or 24.15+.
+
+## Logging
+
+Logging uses [log4cats](https://typelevel.org/log4cats/), so a log call is an effect (`F[Unit]`)
+composed like any other, over SLF4J with **Logback** as the backend. Every line comes from one of
+these loggers:
+
+| Logger | What | Example |
+|---|---|---|
+| `ledger.audit` | Every change to the ledger, and every rejected one | `Transfer of 2.00 from account 6f1c… to 9a2e… rejected: insufficient_funds` |
+| `ledger.service` | One line when a deposit or transfer starts | `Creating transfer transaction from account 6f1c… to 9a2e…` |
+| `ledger.http.access` | One line per HTTP request | `POST /transfers -> 422 in 3 ms [5b0d3c1e-…]` |
+| `ledger.server` | Server lifecycle (Ember) | `Ember-Server service bound to address: [::]:8080` |
+
+- **Audit trail as a decorator.** `AuditedLedgerService` wraps the service and logs after each
+  operation, with a structured context: `event` (`account.created`, `deposit.completed`,
+  `transfer.rejected`…), account ids, `amount` and a stable `reason` code
+  (`insufficient_funds`, `account_not_found`…). The business logic stays pure, and the decorator
+  is wired in `Main`.
+- **Request ids.** http4s' `RequestId` middleware reuses the caller's `X-Request-ID` header or
+  generates one, adds it to the access log line and returns it in the response, so a support
+  ticket can quote it.
+- **No personal data.** Owner names, balances, request bodies, headers and query strings are
+  never logged. The tests assert it.
+
+**JSON output.** By default the console shows readable text. `LOG_FORMAT=json` switches to one JSON
+object per line (Logback's built-in `JsonEncoder`, no extra dependency), with the structured context
+under `mdc` (example abridged):
+
+```bash
+LOG_FORMAT=json sbt run
+```
+
+```json
+{"timestamp":1794312000123,"level":"INFO","loggerName":"ledger.audit","mdc":{"event":"deposit.completed","account.id":"6f1c…","amount":"10.50"},"formattedMessage":"Deposit of 10.50 into account 6f1c…"}
+```
+
+Only `text` and `json` are accepted: any other value (`JSON`, `plain`...) would leave Logback with no
+appender and silently drop every line, so the app refuses to start and says why. `LOG_LEVEL` changes
+the root level (`INFO` by default), e.g. `LOG_LEVEL=DEBUG sbt run`.
+
+**Non-blocking writes.** log4cats runs each log call synchronously on the Cats Effect compute pool, so
+the console appenders sit behind Logback `AsyncAppender`s: a log call only enqueues the event, and a
+background thread writes it. The queues are configured never to drop events (the default would drop
+INFO lines, i.e. the audit trail, when nearly full); a full queue makes callers wait instead, and the
+queues are flushed on shutdown.
+
+**Audit guarantees.** Each change and its audit line run as one uncancelable step, so a request
+cancelled halfway (e.g. a client disconnecting) can't commit a change without recording it. A failing
+logger never fails a committed change, since turning it into a 500 would invite a duplicate retry.
 
 ## API
 
@@ -98,5 +161,5 @@ mocked API. It needs Node 22.22+ or 24.15+.
 
 ## Tech stack
 
-Scala 3.10 · JDK 25 · Cats Effect 3 · http4s · circe · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
+Scala 3.10 · JDK 25 · Cats Effect 3 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
 Vitest · Testing Library
