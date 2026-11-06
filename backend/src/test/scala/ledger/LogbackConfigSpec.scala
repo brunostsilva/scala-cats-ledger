@@ -1,7 +1,7 @@
 package ledger
 
 import scala.jdk.CollectionConverters.*
-import ch.qos.logback.classic.LoggerContext
+import ch.qos.logback.classic.{AsyncAppender, LoggerContext}
 import ch.qos.logback.classic.encoder.JsonEncoder
 import ch.qos.logback.classic.joran.JoranConfigurator
 import ch.qos.logback.core.OutputStreamAppender
@@ -11,45 +11,60 @@ import munit.FunSuite
 /** `logback.xml`, loaded into a fresh context per test so the JVM-wide logging setup is untouched. */
 class LogbackConfigSpec extends FunSuite:
 
-  private def configure(properties: (String, String)*): LoggerContext =
+  /** Loads `logback.xml` with the given properties, runs the checks, then stops the async workers. */
+  private def withConfig(properties: (String, String)*)(checks: LoggerContext => Unit): Unit =
     val context = new LoggerContext()
     properties.foreach((key, value) => context.putProperty(key, value))
     val configurator = new JoranConfigurator()
     configurator.setContext(context)
     configurator.doConfigure(getClass.getResource("/logback.xml"))
-    context
+    try checks(context)
+    finally context.stop()
 
   private def errors(context: LoggerContext): List[String] =
     context.getStatusManager.getCopyOfStatusList.asScala.toList
       .filter(_.getLevel == Status.ERROR)
       .map(_.getMessage)
 
-  private def rootAppenders(context: LoggerContext): List[String] =
-    context.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).iteratorForAppenders().asScala.map(_.getName).toList
+  private def root(context: LoggerContext) = context.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME)
 
-  test("logs readable text at INFO by default") {
-    val context = configure()
-    assertEquals(errors(context), Nil)
-    assertEquals(rootAppenders(context), List("text"))
-    assertEquals(context.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).getLevel.toString, "INFO")
+  private def rootAppenders(context: LoggerContext): List[String] =
+    root(context).iteratorForAppenders().asScala.map(_.getName).toList
+
+  /** The root appender must be asynchronous and lossless, and wrap the given console appender. */
+  private def assertAsyncWrapping(context: LoggerContext, name: String): OutputStreamAppender[?] =
+    val async = root(context).getAppender(s"async-$name").asInstanceOf[AsyncAppender]
+    assertEquals(async.getDiscardingThreshold, 0, "audit lines (INFO) must never be dropped")
+    assert(!async.isNeverBlock, "a full queue must apply backpressure instead of losing lines")
+    async.getAppender(name).asInstanceOf[OutputStreamAppender[?]]
+
+  test("logs readable text at INFO by default, through a lossless async appender") {
+    withConfig() { context =>
+      assertEquals(errors(context), Nil)
+      assertEquals(rootAppenders(context), List("async-text"))
+      assert(!assertAsyncWrapping(context, "text").getEncoder.isInstanceOf[JsonEncoder])
+      assertEquals(root(context).getLevel.toString, "INFO")
+    }
   }
 
   test("LOG_FORMAT=json switches to one JSON object per line") {
-    val context = configure("LOG_FORMAT" -> "json")
-    assertEquals(errors(context), Nil)
-    assertEquals(rootAppenders(context), List("json"))
-    val appender = context.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).getAppender("json")
-    assert(appender.asInstanceOf[OutputStreamAppender[?]].getEncoder.isInstanceOf[JsonEncoder])
+    withConfig("LOG_FORMAT" -> "json") { context =>
+      assertEquals(errors(context), Nil)
+      assertEquals(rootAppenders(context), List("async-json"))
+      assert(assertAsyncWrapping(context, "json").getEncoder.isInstanceOf[JsonEncoder])
+    }
   }
 
   test("an unknown LOG_FORMAT leaves Logback without any appender, which is why Main refuses it") {
-    val context = configure("LOG_FORMAT" -> "JSON")
-    assertEquals(rootAppenders(context), Nil)
-    val problems = context.getStatusManager.getCopyOfStatusList.asScala.filter(_.getLevel >= Status.WARN)
-    assert(problems.nonEmpty, "Logback only reports it as an internal status")
+    withConfig("LOG_FORMAT" -> "JSON") { context =>
+      assertEquals(rootAppenders(context), Nil)
+      val problems = context.getStatusManager.getCopyOfStatusList.asScala.filter(_.getLevel >= Status.WARN)
+      assert(problems.nonEmpty, "Logback only reports it as an internal status")
+    }
   }
 
   test("LOG_LEVEL changes the root level") {
-    val context = configure("LOG_LEVEL" -> "DEBUG")
-    assertEquals(context.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).getLevel.toString, "DEBUG")
+    withConfig("LOG_LEVEL" -> "DEBUG") { context =>
+      assertEquals(root(context).getLevel.toString, "DEBUG")
+    }
   }

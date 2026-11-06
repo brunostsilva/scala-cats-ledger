@@ -2,8 +2,12 @@
   <!--
     Readable text by default. LOG_FORMAT=json switches to one JSON object per line, with the
     structured context of each log call (event, account.id, http.request.id...) under "mdc".
-    LOG_LEVEL changes the root level (INFO by default).
+    Main refuses to start with any other LOG_FORMAT, since it would leave the root logger without
+    an appender. LOG_LEVEL changes the root level (INFO by default).
   -->
+
+  <!-- Flush the async queues below when the JVM stops, so the last lines are not lost. -->
+  <shutdownHook class="ch.qos.logback.core.hook.DefaultShutdownHook" />
 
   <appender name="text" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
@@ -22,7 +26,29 @@
     </encoder>
   </appender>
 
+  <!--
+    log4cats runs each log call synchronously on the Cats Effect compute pool, so writing straight
+    to the console would make request fibers wait on stdout. The async appenders only enqueue the
+    event (with a copy of its MDC); a background thread does the I/O.
+    discardingThreshold=0: never drop events. The default drops INFO and below when the queue is
+    80% full, which would silently lose audit lines.
+    neverBlock=false: when the queue is full, callers wait (backpressure) instead of losing lines.
+  -->
+  <appender name="async-text" class="ch.qos.logback.classic.AsyncAppender">
+    <queueSize>8192</queueSize>
+    <discardingThreshold>0</discardingThreshold>
+    <neverBlock>false</neverBlock>
+    <appender-ref ref="text" />
+  </appender>
+
+  <appender name="async-json" class="ch.qos.logback.classic.AsyncAppender">
+    <queueSize>8192</queueSize>
+    <discardingThreshold>0</discardingThreshold>
+    <neverBlock>false</neverBlock>
+    <appender-ref ref="json" />
+  </appender>
+
   <root level="${LOG_LEVEL:-INFO}">
-    <appender-ref ref="${LOG_FORMAT:-text}" />
+    <appender-ref ref="async-${LOG_FORMAT:-text}" />
   </root>
 </configuration>
