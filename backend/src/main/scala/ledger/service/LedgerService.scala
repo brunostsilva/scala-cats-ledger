@@ -24,17 +24,10 @@ trait LedgerService[F[_]]:
 
 object LedgerService:
 
-  /** Logger for the technical trace of what the service stored (see [[inMemory]]). */
   val LoggerName = "ledger.service"
 
   /** In-memory implementation backed by a single `Ref`, so every mutation is an atomic,
     * race-free compare-and-set over the whole ledger state.
-    *
-    * Deposits and transfers log one INFO line with what was stored: the transaction id (only known
-    * here, and the id shown in an account's transaction history) and the account ids, or the reason
-    * code when nothing was stored. Owner names, amounts and balances are not logged; the business
-    * event is recorded by [[AuditedLedgerService]]. Logging happens after `ref.modify`, never inside:
-    * the update function must stay pure, and it may run more than once under contention.
     */
   def inMemory[F[_]: Sync: LoggerFactory](ref: Ref[F, LedgerState]): LedgerService[F] =
     val logger = LoggerFactory[F].getLoggerFromName(LoggerName)
@@ -53,6 +46,7 @@ object LedgerService:
 
       def deposit(id: AccountId, amount: Money): F[Either[LedgerError, Account]] =
         for
+          _      <- logger.info(s"Creating deposit transaction on account ${id.asString}")
           txId   <- Sync[F].delay(UUID.randomUUID())
           now    <- Sync[F].delay(Instant.now())
           result <- ref.modify { state =>
@@ -70,29 +64,13 @@ object LedgerService:
                               )
                               (newState, Right(updated))
                     }
-          _      <- result match
-                      case Right(_) =>
-                        logger.info(Map("tx.id" -> txId.toString, "account.id" -> id.asString))(
-                          s"Deposit stored as transaction $txId on account ${id.asString}"
-                        )
-                      case Left(error) =>
-                        logger.info(Map("account.id" -> id.asString, "reason" -> error.code))(
-                          s"Deposit on account ${id.asString} not stored: ${error.code}"
-                        )
         yield result
 
       def transfer(from: AccountId, to: AccountId, amount: Money): F[Either[LedgerError, (Account, Account)]] =
-        val accounts = Map("from.account.id" -> from.asString, "to.account.id" -> to.asString)
-        def notStored(error: LedgerError): F[Unit] =
-          logger.info(accounts + ("reason" -> error.code))(
-            s"Transfer from account ${from.asString} to ${to.asString} not stored: ${error.code}"
-          )
-
-        if from == to then
-          val error = LedgerError.SameAccountTransfer(from)
-          notStored(error).as(error.asLeft[(Account, Account)])
+        if from == to then Sync[F].pure(Left(LedgerError.SameAccountTransfer(from)))
         else
           for
+            _      <- logger.info(s"Creating transfer transaction from account ${from.asString} to ${to.asString}")
             txId   <- Sync[F].delay(UUID.randomUUID())
             now    <- Sync[F].delay(Instant.now())
             result <- ref.modify { state =>
@@ -121,12 +99,6 @@ object LedgerService:
                             )
                             (newState, Right((updatedFrom, updatedTo)))
                       }
-            _      <- result match
-                        case Right(_) =>
-                          logger.info(accounts + ("tx.id" -> txId.toString))(
-                            s"Transfer stored as transaction $txId: account ${from.asString} -> ${to.asString} (one entry on each)"
-                          )
-                        case Left(error) => notStored(error)
           yield result
 
       def transactionsFor(id: AccountId): F[Either[LedgerError, List[Transaction]]] =
