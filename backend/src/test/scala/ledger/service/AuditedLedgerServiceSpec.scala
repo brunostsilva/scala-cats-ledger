@@ -12,7 +12,7 @@ import org.typelevel.log4cats.noop.NoOpFactory
 
 class AuditedLedgerServiceSpec extends CatsEffectSuite:
 
-  /** The service's own DEBUG trace is not what these tests are about. */
+  /** The service's own log lines are not what these tests are about. */
   private given LoggerFactory[IO] = NoOpFactory[IO]
 
   private val owner = "Alice Wonderland"

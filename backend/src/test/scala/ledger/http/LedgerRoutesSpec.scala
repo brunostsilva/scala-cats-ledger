@@ -13,7 +13,7 @@ import org.typelevel.log4cats.noop.NoOpFactory
 /** The HTTP API end to end: real routes over the real in-memory service, no mocks. */
 class LedgerRoutesSpec extends CatsEffectSuite:
 
-  /** The service's own DEBUG trace is not what these tests are about. */
+  /** The service's own log lines are not what these tests are about. */
   private given LoggerFactory[IO] = NoOpFactory[IO]
 
   private val unknownId = "00000000-0000-4000-8000-000000000000"

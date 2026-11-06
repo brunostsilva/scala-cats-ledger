@@ -7,11 +7,11 @@ import munit.CatsEffectSuite
 import org.typelevel.log4cats.{LoggerFactory, SelfAwareStructuredLogger}
 import org.typelevel.log4cats.noop.NoOpFactory
 import org.typelevel.log4cats.testing.StructuredTestingLogger
-import org.typelevel.log4cats.testing.StructuredTestingLogger.DEBUG
+import org.typelevel.log4cats.testing.StructuredTestingLogger.INFO
 
 class LedgerServiceSpec extends CatsEffectSuite:
 
-  /** Silent by default; the DEBUG trace test at the end records it with its own factory. */
+  /** Silent by default; the trace test at the end records it with its own factory. */
   private given LoggerFactory[IO] = NoOpFactory[IO]
 
   /** A factory handing out one recording logger, whatever the logger name. */
@@ -202,7 +202,7 @@ class LedgerServiceSpec extends CatsEffectSuite:
       case Left(err)  => fail(s"expected success, got $err")
   }
 
-  test("deposits and transfers leave a DEBUG trace with the transaction id, without owner, amount or balance") {
+  test("deposits and transfers log what was stored, with the transaction id, without owner, amount or balance") {
     val logger = StructuredTestingLogger.impl[IO]()
     for
       ref     <- Ref.of[IO, LedgerState](LedgerState.empty)
@@ -229,7 +229,7 @@ class LedgerServiceSpec extends CatsEffectSuite:
       )
       assertEquals(logged.head.message, s"Deposit stored as transaction $depositTx on account ${alice.id.asString}")
       logged.foreach { entry =>
-        assert(entry.isInstanceOf[DEBUG], entry)
+        assert(entry.isInstanceOf[INFO], entry)
         assert(!entry.message.contains("Alice") && !entry.message.contains("5.00"), entry.message)
       }
   }

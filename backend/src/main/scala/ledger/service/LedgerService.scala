@@ -30,7 +30,7 @@ object LedgerService:
   /** In-memory implementation backed by a single `Ref`, so every mutation is an atomic,
     * race-free compare-and-set over the whole ledger state.
     *
-    * Deposits and transfers log one DEBUG line with what was stored: the transaction id (only known
+    * Deposits and transfers log one INFO line with what was stored: the transaction id (only known
     * here, and the id shown in an account's transaction history) and the account ids, or the reason
     * code when nothing was stored. Owner names, amounts and balances are not logged; the business
     * event is recorded by [[AuditedLedgerService]]. Logging happens after `ref.modify`, never inside:
@@ -72,11 +72,11 @@ object LedgerService:
                     }
           _      <- result match
                       case Right(_) =>
-                        logger.debug(Map("tx.id" -> txId.toString, "account.id" -> id.asString))(
+                        logger.info(Map("tx.id" -> txId.toString, "account.id" -> id.asString))(
                           s"Deposit stored as transaction $txId on account ${id.asString}"
                         )
                       case Left(error) =>
-                        logger.debug(Map("account.id" -> id.asString, "reason" -> error.code))(
+                        logger.info(Map("account.id" -> id.asString, "reason" -> error.code))(
                           s"Deposit on account ${id.asString} not stored: ${error.code}"
                         )
         yield result
@@ -84,7 +84,7 @@ object LedgerService:
       def transfer(from: AccountId, to: AccountId, amount: Money): F[Either[LedgerError, (Account, Account)]] =
         val accounts = Map("from.account.id" -> from.asString, "to.account.id" -> to.asString)
         def notStored(error: LedgerError): F[Unit] =
-          logger.debug(accounts + ("reason" -> error.code))(
+          logger.info(accounts + ("reason" -> error.code))(
             s"Transfer from account ${from.asString} to ${to.asString} not stored: ${error.code}"
           )
 
@@ -123,7 +123,7 @@ object LedgerService:
                       }
             _      <- result match
                         case Right(_) =>
-                          logger.debug(accounts + ("tx.id" -> txId.toString))(
+                          logger.info(accounts + ("tx.id" -> txId.toString))(
                             s"Transfer stored as transaction $txId: account ${from.asString} -> ${to.asString} (one entry on each)"
                           )
                         case Left(error) => notStored(error)
