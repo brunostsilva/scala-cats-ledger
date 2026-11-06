@@ -7,8 +7,13 @@ import munit.CatsEffectSuite
 import org.typelevel.log4cats.testing.StructuredTestingLogger
 import org.typelevel.log4cats.testing.StructuredTestingLogger.{INFO, LogMessage}
 import ledger.domain.*
+import org.typelevel.log4cats.LoggerFactory
+import org.typelevel.log4cats.noop.NoOpFactory
 
 class AuditedLedgerServiceSpec extends CatsEffectSuite:
+
+  /** The service's own DEBUG trace is not what these tests are about. */
+  private given LoggerFactory[IO] = NoOpFactory[IO]
 
   private val owner = "Alice Wonderland"
 
@@ -137,7 +142,7 @@ class AuditedLedgerServiceSpec extends CatsEffectSuite:
       LedgerError.InsufficientFunds(id, Money.zero, cents(1)),
       LedgerError.SameAccountTransfer(id),
       LedgerError.InvalidAmount("Amount overflow")
-    ).map(AuditedLedgerService.reason)
+    ).map(_.code)
     assertEquals(reasons, List("account_not_found", "insufficient_funds", "same_account", "invalid_amount"))
   }
 

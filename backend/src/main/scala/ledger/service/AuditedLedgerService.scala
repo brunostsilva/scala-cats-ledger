@@ -48,7 +48,7 @@ object AuditedLedgerService:
             )
           case Left(error) =>
             logger.info(context ++ rejection("deposit", error))(
-              s"Deposit of ${render(amount)} into account ${id.asString} rejected: ${reason(error)}"
+              s"Deposit of ${render(amount)} into account ${id.asString} rejected: ${error.code}"
             )
         }
 
@@ -61,7 +61,7 @@ object AuditedLedgerService:
             )
           case Left(error) =>
             logger.info(context ++ rejection("transfer", error))(
-              s"Transfer of ${render(amount)} from account ${from.asString} to ${to.asString} rejected: ${reason(error)}"
+              s"Transfer of ${render(amount)} from account ${from.asString} to ${to.asString} rejected: ${error.code}"
             )
         }
 
@@ -69,13 +69,6 @@ object AuditedLedgerService:
         underlying.transactionsFor(id)
 
   private def rejection(operation: String, error: LedgerError): Map[String, String] =
-    Map("event" -> s"$operation.rejected", "reason" -> reason(error))
-
-  /** A stable, machine-friendly code: error messages may change, dashboards and alerts shouldn't. */
-  private[service] def reason(error: LedgerError): String = error match
-    case LedgerError.AccountNotFound(_)        => "account_not_found"
-    case LedgerError.InsufficientFunds(_, _, _) => "insufficient_funds"
-    case LedgerError.SameAccountTransfer(_)    => "same_account"
-    case LedgerError.InvalidAmount(_)          => "invalid_amount"
+    Map("event" -> s"$operation.rejected", "reason" -> error.code)
 
   private def render(amount: Money): String = amount.toBigDecimal.bigDecimal.toPlainString

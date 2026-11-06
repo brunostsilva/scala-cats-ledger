@@ -96,11 +96,12 @@ mocked API. It needs Node 22.22+ or 24.15+.
 
 Logging uses [log4cats](https://typelevel.org/log4cats/), so a log call is an effect (`F[Unit]`)
 composed like any other, over SLF4J with **Logback** as the backend. Every line comes from one of
-three loggers:
+these loggers:
 
 | Logger | What | Example |
 |---|---|---|
 | `ledger.audit` | Every change to the ledger, and every rejected one | `Transfer of 2.00 from account 6f1c… to 9a2e… rejected: insufficient_funds` |
+| `ledger.service` | `DEBUG` only: what the service stored, with the transaction id it generated (the id shown in the account's history) | `Transfer stored as transaction 0c7e…: account 6f1c… -> 9a2e… (one entry on each)` |
 | `ledger.http.access` | One line per HTTP request | `POST /transfers -> 422 in 3 ms [5b0d3c1e-…]` |
 | `ledger.server` | Server lifecycle (Ember) | `Ember-Server service bound to address: [::]:8080` |
 
@@ -109,6 +110,10 @@ three loggers:
   `transfer.rejected`…), account ids, `amount` and a stable `reason` code
   (`insufficient_funds`, `account_not_found`…). The business logic stays pure, and the decorator
   is wired in `Main`.
+- **Service trace at DEBUG.** `LedgerService.inMemory` logs what it stored right after the
+  `Ref` update (never inside it: the update function must stay pure and may run more than once
+  under contention). It adds the one thing the decorator can't see, the transaction id, and is
+  off at the default `INFO` level. To see it: `LOG_LEVEL=DEBUG sbt run`.
 - **Request ids.** http4s' `RequestId` middleware reuses the caller's `X-Request-ID` header or
   generates one, adds it to the access log line and returns it in the response, so a support
   ticket can quote it.
