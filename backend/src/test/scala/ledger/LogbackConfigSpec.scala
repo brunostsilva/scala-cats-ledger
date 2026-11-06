@@ -42,6 +42,13 @@ class LogbackConfigSpec extends FunSuite:
     assert(appender.asInstanceOf[OutputStreamAppender[?]].getEncoder.isInstanceOf[JsonEncoder])
   }
 
+  test("an unknown LOG_FORMAT leaves Logback without any appender, which is why Main refuses it") {
+    val context = configure("LOG_FORMAT" -> "JSON")
+    assertEquals(rootAppenders(context), Nil)
+    val problems = context.getStatusManager.getCopyOfStatusList.asScala.filter(_.getLevel >= Status.WARN)
+    assert(problems.nonEmpty, "Logback only reports it as an internal status")
+  }
+
   test("LOG_LEVEL changes the root level") {
     val context = configure("LOG_LEVEL" -> "DEBUG")
     assertEquals(context.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).getLevel.toString, "DEBUG")

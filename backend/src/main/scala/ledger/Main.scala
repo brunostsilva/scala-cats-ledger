@@ -1,6 +1,7 @@
 package ledger
 
 import cats.effect.{ExitCode, IO, IOApp, Ref}
+import cats.effect.std.Console
 import com.comcast.ip4s.*
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.server.middleware.{CORS, RequestId}
@@ -15,6 +16,12 @@ object Main extends IOApp:
   private given LoggerFactory[IO] = Slf4jFactory.create[IO]
 
   def run(args: List[String]): IO[ExitCode] =
+    IO(LogFormat.validate(LogFormat.configured)).flatMap {
+      case Left(error) => Console[IO].errorln(error).as(ExitCode.Error)
+      case Right(_)    => serve
+    }
+
+  private def serve: IO[ExitCode] =
     for
       ref     <- Ref.of[IO, LedgerState](LedgerState.empty)
       service  = AuditedLedgerService(
