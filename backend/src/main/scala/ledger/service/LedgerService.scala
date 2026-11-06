@@ -2,6 +2,7 @@ package ledger.service
 
 import java.time.Instant
 import java.util.UUID
+import cats.data.EitherT
 import cats.effect.{Ref, Sync}
 import cats.syntax.all.*
 import org.typelevel.log4cats.LoggerFactory
@@ -67,39 +68,38 @@ object LedgerService:
         yield result
 
       def transfer(from: AccountId, to: AccountId, amount: Money): F[Either[LedgerError, (Account, Account)]] =
-        if from == to then Sync[F].pure(Left(LedgerError.SameAccountTransfer(from)))
-        else
-          for
-            _      <- logger.info(s"Creating transfer transaction from account ${from.asString} to ${to.asString}")
-            txId   <- Sync[F].delay(UUID.randomUUID())
-            now    <- Sync[F].delay(Instant.now())
-            result <- ref.modify { state =>
-                        val attempt =
-                          for
-                            fromAcc        <- state.accounts.get(from).toRight(LedgerError.AccountNotFound(from))
-                            toAcc          <- state.accounts.get(to).toRight(LedgerError.AccountNotFound(to))
-                            newFromBalance <- (fromAcc.balance - amount).left.map(_ =>
-                                                LedgerError.InsufficientFunds(from, fromAcc.balance, amount)
-                                              )
-                            newToBalance   <- (toAcc.balance + amount).left.map(LedgerError.InvalidAmount.apply)
-                          yield (fromAcc, toAcc, newFromBalance, newToBalance)
+        (for
+          _      <- EitherT.cond[F](from != to, (), LedgerError.SameAccountTransfer(from))
+          _      <- EitherT.right[LedgerError](logger.info(s"Creating transfer transaction from account ${from.asString} to ${to.asString}"))
+          txId   <- EitherT.right[LedgerError](Sync[F].delay(UUID.randomUUID()))
+          now    <- EitherT.right[LedgerError](Sync[F].delay(Instant.now()))
+          result <- EitherT(ref.modify[Either[LedgerError, (Account, Account)]] { state =>
+                      val attempt =
+                        for
+                          fromAcc        <- state.accounts.get(from).toRight(LedgerError.AccountNotFound(from))
+                          toAcc          <- state.accounts.get(to).toRight(LedgerError.AccountNotFound(to))
+                          newFromBalance <- (fromAcc.balance - amount).left.map(_ =>
+                                              LedgerError.InsufficientFunds(from, fromAcc.balance, amount)
+                                            )
+                          newToBalance   <- (toAcc.balance + amount).left.map(LedgerError.InvalidAmount.apply)
+                        yield (fromAcc, toAcc, newFromBalance, newToBalance)
 
-                        attempt match
-                          case Left(err) => (state, Left(err))
-                          case Right((fromAcc, toAcc, newFromBalance, newToBalance)) =>
-                            val updatedFrom = fromAcc.copy(balance = newFromBalance)
-                            val updatedTo   = toAcc.copy(balance = newToBalance)
-                            val txOut = Transaction(txId, from, Some(to), TransactionType.Transfer, amount, updatedFrom.balance, now)
-                            val txIn  = Transaction(txId, to, Some(from), TransactionType.Transfer, amount, updatedTo.balance, now)
-                            val newState = state.copy(
-                              accounts = state.accounts.updated(from, updatedFrom).updated(to, updatedTo),
-                              transactions = state.transactions
-                                .updatedWith(from)(txs => Some(txOut :: txs.getOrElse(Nil)))
-                                .updatedWith(to)(txs => Some(txIn :: txs.getOrElse(Nil)))
-                            )
-                            (newState, Right((updatedFrom, updatedTo)))
-                      }
-          yield result
+                      attempt match
+                        case Left(err) => (state, Left(err))
+                        case Right((fromAcc, toAcc, newFromBalance, newToBalance)) =>
+                          val updatedFrom = fromAcc.copy(balance = newFromBalance)
+                          val updatedTo   = toAcc.copy(balance = newToBalance)
+                          val txOut = Transaction(txId, from, Some(to), TransactionType.Transfer, amount, updatedFrom.balance, now)
+                          val txIn  = Transaction(txId, to, Some(from), TransactionType.Transfer, amount, updatedTo.balance, now)
+                          val newState = state.copy(
+                            accounts = state.accounts.updated(from, updatedFrom).updated(to, updatedTo),
+                            transactions = state.transactions
+                              .updatedWith(from)(txs => Some(txOut :: txs.getOrElse(Nil)))
+                              .updatedWith(to)(txs => Some(txIn :: txs.getOrElse(Nil)))
+                          )
+                          (newState, Right((updatedFrom, updatedTo)))
+                    })
+        yield result).value
 
       def transactionsFor(id: AccountId): F[Either[LedgerError, List[Transaction]]] =
         ref.get.map { state =>
