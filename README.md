@@ -127,7 +127,19 @@ LOG_FORMAT=json sbt run
 {"timestamp":1794312000123,"level":"INFO","loggerName":"ledger.audit","mdc":{"event":"deposit.completed","account.id":"6f1c…","amount":"10.50"},"formattedMessage":"Deposit of 10.50 into account 6f1c…"}
 ```
 
-`LOG_LEVEL` changes the root level (`INFO` by default), e.g. `LOG_LEVEL=DEBUG sbt run`.
+Only `text` and `json` are accepted: any other value (`JSON`, `plain`...) would leave Logback with no
+appender and silently drop every line, so the app refuses to start and says why. `LOG_LEVEL` changes
+the root level (`INFO` by default), e.g. `LOG_LEVEL=DEBUG sbt run`.
+
+**Non-blocking writes.** log4cats runs each log call synchronously on the Cats Effect compute pool, so
+the console appenders sit behind Logback `AsyncAppender`s: a log call only enqueues the event, and a
+background thread writes it. The queues are configured never to drop events (the default would drop
+INFO lines, i.e. the audit trail, when nearly full); a full queue makes callers wait instead, and the
+queues are flushed on shutdown.
+
+**Audit guarantees.** Each change and its audit line run as one uncancelable step, so a request
+cancelled halfway (e.g. a client disconnecting) can't commit a change without recording it. A failing
+logger never fails a committed change, since turning it into a 500 would invite a duplicate retry.
 
 ## API
 
