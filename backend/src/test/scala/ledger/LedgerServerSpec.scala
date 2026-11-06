@@ -102,7 +102,7 @@ class LedgerServerSpec extends CatsEffectSuite:
                   )
         logged <- app.logger.logged
       yield
-        assertEquals(reply.status, Status.UnprocessableEntity)
+        assertEquals(reply.status, Status.UnprocessableContent)
         assertEquals(logged.flatMap(_.ctx.get("reason")), Vector("same_account"))
         assert(!logged.exists(_.message.startsWith("Creating transfer")), logged.map(_.message))
     }
