@@ -1,6 +1,6 @@
 package ledger.service
 
-import cats.Monad
+import cats.effect.MonadCancelThrow
 import cats.syntax.all.*
 import org.typelevel.log4cats.StructuredLogger
 import ledger.domain.*
@@ -12,17 +12,25 @@ import ledger.domain.*
   * Owner names and balances are never logged: the trail records what happened to which account, not
   * who owns it or how much it holds. Reads are not audited. The underlying service stays free of any
   * logging concern, and its results are returned unchanged.
+  *
+  * Each change and its audit line run as one uncancelable step, so a cancelled request (e.g. the
+  * client disconnecting) can't commit a change without recording it. A failing logger never fails
+  * the operation: the change is already committed, and turning it into an error would invite a
+  * retry that applies it twice.
   */
 object AuditedLedgerService:
 
   /** A dedicated logger name, so the audit trail can be routed or filtered on its own. */
   val LoggerName = "ledger.audit"
 
-  def apply[F[_]: Monad](underlying: LedgerService[F], logger: StructuredLogger[F]): LedgerService[F] =
+  def apply[F[_]: MonadCancelThrow](underlying: LedgerService[F], logger: StructuredLogger[F]): LedgerService[F] =
     new LedgerService[F]:
 
+      private def audited[A](change: F[A])(audit: A => F[Unit]): F[A] =
+        MonadCancelThrow[F].uncancelable(_ => change.flatTap(result => audit(result).attempt.void))
+
       def createAccount(owner: String): F[Account] =
-        underlying.createAccount(owner).flatTap { account =>
+        audited(underlying.createAccount(owner)) { account =>
           logger.info(Map("event" -> "account.created", "account.id" -> account.id.asString))(
             s"Account ${account.id.asString} created"
           )
@@ -33,7 +41,7 @@ object AuditedLedgerService:
 
       def deposit(id: AccountId, amount: Money): F[Either[LedgerError, Account]] =
         val context = Map("account.id" -> id.asString, "amount" -> render(amount))
-        underlying.deposit(id, amount).flatTap {
+        audited(underlying.deposit(id, amount)) {
           case Right(_) =>
             logger.info(context + ("event" -> "deposit.completed"))(
               s"Deposit of ${render(amount)} into account ${id.asString}"
@@ -46,7 +54,7 @@ object AuditedLedgerService:
 
       def transfer(from: AccountId, to: AccountId, amount: Money): F[Either[LedgerError, (Account, Account)]] =
         val context = Map("from.account.id" -> from.asString, "to.account.id" -> to.asString, "amount" -> render(amount))
-        underlying.transfer(from, to, amount).flatTap {
+        audited(underlying.transfer(from, to, amount)) {
           case Right(_) =>
             logger.info(context + ("event" -> "transfer.completed"))(
               s"Transfer of ${render(amount)} from account ${from.asString} to ${to.asString}"

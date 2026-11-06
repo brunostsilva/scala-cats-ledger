@@ -1,5 +1,7 @@
 package ledger.service
 
+import scala.concurrent.duration.*
+import cats.~>
 import cats.effect.{IO, Ref}
 import munit.CatsEffectSuite
 import org.typelevel.log4cats.testing.StructuredTestingLogger
@@ -137,4 +139,41 @@ class AuditedLedgerServiceSpec extends CatsEffectSuite:
       LedgerError.InvalidAmount("Amount overflow")
     ).map(AuditedLedgerService.reason)
     assertEquals(reasons, List("account_not_found", "insufficient_funds", "same_account", "invalid_amount"))
+  }
+
+  test("a failing logger never fails a change that is already committed") {
+    val failing = StructuredTestingLogger.impl[IO]().mapK(new (IO ~> IO) {
+      def apply[A](fa: IO[A]): IO[A] = IO.raiseError(new RuntimeException("logger down"))
+    })
+    for
+      ref     <- Ref.of[IO, LedgerState](LedgerState.empty)
+      plain    = LedgerService.inMemory[IO](ref)
+      service  = AuditedLedgerService(plain, failing)
+      account <- service.createAccount(owner)
+      result  <- service.deposit(account.id, cents(1000))
+      stored  <- plain.getAccount(account.id)
+    yield
+      // A 500 here would make clients retry a deposit that was already applied.
+      assertEquals(result, Right(account.copy(balance = cents(1000))))
+      assertEquals(stored, Right(account.copy(balance = cents(1000))))
+  }
+
+  test("cancelling a request while its audit line is written keeps both the change and the line") {
+    val recorder = StructuredTestingLogger.impl[IO]()
+    val slow = recorder.mapK(new (IO ~> IO) {
+      def apply[A](fa: IO[A]): IO[A] = IO.sleep(200.millis) *> fa
+    })
+    for
+      ref     <- Ref.of[IO, LedgerState](LedgerState.empty)
+      plain    = LedgerService.inMemory[IO](ref)
+      account <- plain.createAccount(owner)
+      service  = AuditedLedgerService(plain, slow)
+      fiber   <- service.deposit(account.id, cents(1000)).start
+      _       <- IO.sleep(50.millis) // the deposit is committed and its audit line is being written
+      _       <- fiber.cancel        // waits for the uncancelable change + audit step to finish
+      stored  <- plain.getAccount(account.id)
+      logged  <- recorder.logged
+    yield
+      assertEquals(stored.map(_.balance), Right(cents(1000)))
+      assertEquals(events(logged), Vector("deposit.completed"))
   }
