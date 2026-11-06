@@ -19,7 +19,8 @@ lazy val root = (project in file("."))
       "ch.qos.logback"  % "logback-classic"     % "1.6.6",
       "org.scalameta"  %% "munit"               % "1.3.6" % Test,
       "org.typelevel"  %% "munit-cats-effect"   % "2.2.1" % Test,
-      "org.typelevel"  %% "log4cats-testing"    % log4catsVersion % Test
+      "org.typelevel"  %% "log4cats-testing"    % log4catsVersion % Test,
+      "org.http4s"     %% "http4s-ember-client" % http4sVersion % Test
     ),
     testFrameworks += new TestFramework("munit.Framework")
   )

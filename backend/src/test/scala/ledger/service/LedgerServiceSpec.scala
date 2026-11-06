@@ -4,20 +4,15 @@ import cats.effect.{IO, Ref, Sync}
 import cats.syntax.all.*
 import ledger.domain.*
 import munit.CatsEffectSuite
-import org.typelevel.log4cats.{LoggerFactory, SelfAwareStructuredLogger}
+import org.typelevel.log4cats.LoggerFactory
 import org.typelevel.log4cats.noop.NoOpFactory
 import org.typelevel.log4cats.testing.StructuredTestingLogger
+import ledger.RecordingLoggerFactory
 
 class LedgerServiceSpec extends CatsEffectSuite:
 
   /** Silent by default; the last test records the log lines with its own factory. */
   private given LoggerFactory[IO] = NoOpFactory[IO]
-
-  /** A factory handing out one recording logger, whatever the logger name. */
-  private def recordingFactory(logger: StructuredTestingLogger[IO]): LoggerFactory[IO] =
-    new LoggerFactory[IO]:
-      def getLoggerFromName(name: String): SelfAwareStructuredLogger[IO] = logger
-      def fromName(name: String): IO[SelfAwareStructuredLogger[IO]]     = IO.pure(logger)
 
   private def newService: IO[LedgerService[IO]] =
     Ref.of[IO, LedgerState](LedgerState.empty).map(LedgerService.inMemory[IO])
@@ -205,7 +200,7 @@ class LedgerServiceSpec extends CatsEffectSuite:
     val logger = StructuredTestingLogger.impl[IO]()
     for
       ref    <- Ref.of[IO, LedgerState](LedgerState.empty)
-      service = LedgerService.inMemory[IO](ref)(using Sync[IO], recordingFactory(logger))
+      service = LedgerService.inMemory[IO](ref)(using Sync[IO], RecordingLoggerFactory(logger))
       alice  <- service.createAccount("Alice")
       bob    <- service.createAccount("Bob")
       _      <- service.deposit(alice.id, cents(500))

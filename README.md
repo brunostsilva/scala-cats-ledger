@@ -74,6 +74,9 @@ The backend suite (munit + munit-cats-effect) covers:
   validation errors.
 - **HTTP API end to end:** every route with its success and error statuses (201/200/400/404/422)
   and messages, running the real routes over the real in-memory service.
+- **Real server:** `LedgerServerSpec` starts the same wiring as `Main` (`LedgerServer.resource`) on a
+  free port and calls it with an HTTP client: deposits and transfers through routes, service and
+  audit, request ids and CORS headers in the responses, and the matching log lines. No Docker needed.
 - **Service:** deposits, transfers, transaction history, and **concurrency**: parallel deposits are
   all applied, and parallel transfers never overdraw an account, since every mutation is an atomic
   `Ref` update.
