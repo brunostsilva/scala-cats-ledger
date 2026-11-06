@@ -1,0 +1,73 @@
+package ledger.service
+
+import cats.Monad
+import cats.syntax.all.*
+import org.typelevel.log4cats.StructuredLogger
+import ledger.domain.*
+
+/** Decorates a [[LedgerService]] with an audit trail: one structured log line per change to the
+  * ledger (account created, deposit, transfer) and per rejected change, with the account ids, the
+  * amount and the reason it was rejected.
+  *
+  * Owner names and balances are never logged: the trail records what happened to which account, not
+  * who owns it or how much it holds. Reads are not audited. The underlying service stays free of any
+  * logging concern, and its results are returned unchanged.
+  */
+object AuditedLedgerService:
+
+  /** A dedicated logger name, so the audit trail can be routed or filtered on its own. */
+  val LoggerName = "ledger.audit"
+
+  def apply[F[_]: Monad](underlying: LedgerService[F], logger: StructuredLogger[F]): LedgerService[F] =
+    new LedgerService[F]:
+
+      def createAccount(owner: String): F[Account] =
+        underlying.createAccount(owner).flatTap { account =>
+          logger.info(Map("event" -> "account.created", "account.id" -> account.id.asString))(
+            s"Account ${account.id.asString} created"
+          )
+        }
+
+      def getAccount(id: AccountId): F[Either[LedgerError, Account]] =
+        underlying.getAccount(id)
+
+      def deposit(id: AccountId, amount: Money): F[Either[LedgerError, Account]] =
+        val context = Map("account.id" -> id.asString, "amount" -> render(amount))
+        underlying.deposit(id, amount).flatTap {
+          case Right(_) =>
+            logger.info(context + ("event" -> "deposit.completed"))(
+              s"Deposit of ${render(amount)} into account ${id.asString}"
+            )
+          case Left(error) =>
+            logger.info(context ++ rejection("deposit", error))(
+              s"Deposit of ${render(amount)} into account ${id.asString} rejected: ${reason(error)}"
+            )
+        }
+
+      def transfer(from: AccountId, to: AccountId, amount: Money): F[Either[LedgerError, (Account, Account)]] =
+        val context = Map("from.account.id" -> from.asString, "to.account.id" -> to.asString, "amount" -> render(amount))
+        underlying.transfer(from, to, amount).flatTap {
+          case Right(_) =>
+            logger.info(context + ("event" -> "transfer.completed"))(
+              s"Transfer of ${render(amount)} from account ${from.asString} to ${to.asString}"
+            )
+          case Left(error) =>
+            logger.info(context ++ rejection("transfer", error))(
+              s"Transfer of ${render(amount)} from account ${from.asString} to ${to.asString} rejected: ${reason(error)}"
+            )
+        }
+
+      def transactionsFor(id: AccountId): F[Either[LedgerError, List[Transaction]]] =
+        underlying.transactionsFor(id)
+
+  private def rejection(operation: String, error: LedgerError): Map[String, String] =
+    Map("event" -> s"$operation.rejected", "reason" -> reason(error))
+
+  /** A stable, machine-friendly code: error messages may change, dashboards and alerts shouldn't. */
+  private[service] def reason(error: LedgerError): String = error match
+    case LedgerError.AccountNotFound(_)        => "account_not_found"
+    case LedgerError.InsufficientFunds(_, _, _) => "insufficient_funds"
+    case LedgerError.SameAccountTransfer(_)    => "same_account"
+    case LedgerError.InvalidAmount(_)          => "invalid_amount"
+
+  private def render(amount: Money): String = amount.toBigDecimal.bigDecimal.toPlainString
