@@ -5,7 +5,7 @@ import ch.qos.logback.classic.{AsyncAppender, LoggerContext}
 import ch.qos.logback.classic.encoder.JsonEncoder
 import ch.qos.logback.classic.joran.JoranConfigurator
 import ch.qos.logback.core.OutputStreamAppender
-import ch.qos.logback.core.status.Status
+import ch.qos.logback.core.status.{OnErrorConsoleStatusListener, Status}
 import munit.FunSuite
 
 /** `logback.xml`, loaded into a fresh context per test so the JVM-wide logging setup is untouched. */
@@ -44,6 +44,13 @@ class LogbackConfigSpec extends FunSuite:
       assertEquals(rootAppenders(context), List("async-text"))
       assert(!assertAsyncWrapping(context, "text").getEncoder.isInstanceOf[JsonEncoder])
       assertEquals(root(context).getLevel.toString, "INFO")
+    }
+  }
+
+  test("only Logback's own errors reach the console, so warnings don't dump its status on startup") {
+    withConfig() { context =>
+      val listeners = context.getStatusManager.getCopyOfStatusListenerList.asScala.toList
+      assert(listeners.exists(_.isInstanceOf[OnErrorConsoleStatusListener]), listeners)
     }
   }
 
