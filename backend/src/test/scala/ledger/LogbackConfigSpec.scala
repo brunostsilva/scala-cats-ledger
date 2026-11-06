@@ -5,7 +5,7 @@ import ch.qos.logback.classic.{AsyncAppender, LoggerContext}
 import ch.qos.logback.classic.encoder.JsonEncoder
 import ch.qos.logback.classic.joran.JoranConfigurator
 import ch.qos.logback.core.OutputStreamAppender
-import ch.qos.logback.core.status.{OnErrorConsoleStatusListener, Status}
+import ch.qos.logback.core.status.{ErrorStatus, InfoStatus, Status, WarnStatus}
 import munit.FunSuite
 
 /** `logback.xml`, loaded into a fresh context per test so the JVM-wide logging setup is untouched. */
@@ -50,8 +50,23 @@ class LogbackConfigSpec extends FunSuite:
   test("only Logback's own errors reach the console, so warnings don't dump its status on startup") {
     withConfig() { context =>
       val listeners = context.getStatusManager.getCopyOfStatusListenerList.asScala.toList
-      assert(listeners.exists(_.isInstanceOf[OnErrorConsoleStatusListener]), listeners)
+      assert(listeners.exists(_.isInstanceOf[ErrorsOnlyStatusListener]), listeners)
     }
+  }
+
+  test("ErrorsOnlyStatusListener prints errors and ignores info and warnings") {
+    val captured = new java.io.ByteArrayOutputStream()
+    val original = System.err
+    System.setErr(new java.io.PrintStream(captured, true))
+    try
+      val listener = new ErrorsOnlyStatusListener
+      listener.addStatusEvent(new InfoStatus("an info status", this))
+      listener.addStatusEvent(new WarnStatus("a warning status", this))
+      listener.addStatusEvent(new ErrorStatus("an error status", this))
+    finally System.setErr(original)
+    val printed = captured.toString
+    assert(printed.contains("Logback error: an error status"), printed)
+    assert(!printed.contains("an info status") && !printed.contains("a warning status"), printed)
   }
 
   test("LOG_FORMAT=json switches to one JSON object per line") {

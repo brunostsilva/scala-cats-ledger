@@ -11,7 +11,7 @@
     while loading this file (such as the unused async appender of the other LOG_FORMAT) makes Logback
     dump its whole internal status on startup.
   -->
-  <statusListener class="ch.qos.logback.core.status.OnErrorConsoleStatusListener" />
+  <statusListener class="ledger.ErrorsOnlyStatusListener" />
 
   <!-- Flush the async queues below when the JVM stops, so the last lines are not lost. -->
   <shutdownHook class="ch.qos.logback.core.hook.DefaultShutdownHook" />
