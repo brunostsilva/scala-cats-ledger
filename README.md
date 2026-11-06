@@ -77,6 +77,10 @@ The backend suite (munit + munit-cats-effect) covers:
 - **Real server:** `LedgerServerSpec` starts the same wiring as `Main` (`LedgerServer.resource`) on a
   free port and calls it with an HTTP client: deposits and transfers through routes, service and
   audit, request ids and CORS headers in the responses, and the matching log lines. No Docker needed.
+- **Real logging stack:** `RealLoggingSpec` runs the server with the same logging as `Main`
+  (log4cats → SLF4J → Logback with `logback.xml`), so its log lines are printed in the `sbt test`
+  output, in CI too, and checks what Logback received: every layer, structured fields in the MDC,
+  no owner names. The other tests record log lines in memory instead.
 - **Service:** deposits, transfers, transaction history, and **concurrency**: parallel deposits are
   all applied, and parallel transfers never overdraw an account, since every mutation is an atomic
   `Ref` update.
