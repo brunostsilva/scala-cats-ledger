@@ -107,3 +107,35 @@ class LedgerServerSpec extends CatsEffectSuite:
         assert(!logged.exists(_.message.startsWith("Creating transfer")), logged.map(_.message))
     }
   }
+
+  test("GET /stream/transfers streams the transfers made through the API as chunked NDJSON") {
+    running.use { app =>
+      for
+        alice <- createAccount(app, "Alice")
+        bob   <- createAccount(app, "Bob")
+        _     <- post(app, app.base / "accounts" / alice / "deposit", Json.obj("amount" -> Json.fromBigDecimal(BigDecimal("10"))))
+        _     <- post(
+                   app,
+                   app.base / "transfers",
+                   Json.obj(
+                     "from"   -> Json.fromString(alice),
+                     "to"     -> Json.fromString(bob),
+                     "amount" -> Json.fromBigDecimal(BigDecimal("3"))
+                   )
+                 )
+        reply <- app.client
+                   .run(Request[IO](Method.GET, app.base / "stream" / "transfers"))
+                   .use(response => response.bodyText.compile.string.map(body => (response.status, response.headers, body)))
+      yield
+        val (status, headers, body) = reply
+        assertEquals(status, Status.Ok)
+        assertEquals(headers.get(ci"Content-Type").map(_.head.value), Some("application/x-ndjson"))
+        assert(headers.get(ci"Transfer-Encoding").exists(_.head.value.contains("chunked")), headers)
+        val lines = body.linesIterator.filter(_.nonEmpty).toList
+        assertEquals(lines.size, 1, body)
+        val transfer = io.circe.jawn.parse(lines.head).toOption.get.hcursor
+        assertEquals(transfer.get[String]("from").toOption, Some(alice))
+        assertEquals(transfer.get[String]("to").toOption, Some(bob))
+        assertEquals(transfer.get[BigDecimal]("amount").toOption, Some(BigDecimal("3.00")))
+    }
+  }

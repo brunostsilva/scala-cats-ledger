@@ -2,12 +2,16 @@ package ledger.http
 
 import java.time.Instant
 import java.util.UUID
+import scala.concurrent.duration.*
 import cats.effect.{IO, Ref}
 import cats.syntax.all.*
+import com.comcast.ip4s.*
 import fs2.Stream
 import io.circe.jawn.decode
 import munit.CatsEffectSuite
 import org.http4s.*
+import org.http4s.ember.client.EmberClientBuilder
+import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.implicits.*
 import org.typelevel.ci.*
 import org.typelevel.log4cats.LoggerFactory
@@ -108,3 +112,32 @@ class TransferStreamRoutesSpec extends CatsEffectSuite:
       assert(received.lastOption.exists(_.isLeft), received)
       assertEquals(closed, 1)
   }
+
+  test("over a real socket, a client that disconnects mid-stream makes the server release the cursor") {
+    val server = (storage: CursorStorage) =>
+      EmberServerBuilder
+        .default[IO]
+        .withHost(host"127.0.0.1")
+        .withPort(port"0")
+        .withHttpApp(new LedgerRoutes[IO](storage.service).routes.orNotFound)
+        .build
+    for
+      storage <- cursorStorage(Stream.iterate(0L)(_ + 1).map(sampleTransfer)) // never ends
+      result  <- server(storage).both(EmberClientBuilder.default[IO].build).use { (running, client) =>
+                   val get = Request[IO](Method.GET, running.baseUri / "stream" / "transfers")
+                   for
+                     // Reading 3 lines and stopping closes the response, and with it the connection.
+                     firstFew <- client.stream(get).flatMap(lines).take(3).compile.toList
+                     // The server only notices on its next write, so wait (bounded) for the release.
+                     _        <- eventually(storage.closed.get.map(_ == 1))
+                     opened   <- storage.opened.get
+                   yield (firstFew.size, opened)
+                 }
+      closed  <- storage.closed.get
+    yield assertEquals((result._1, result._2, closed), (3, 1, 1))
+  }
+
+  /** Polls `condition` every 50 ms, failing after 10 s. */
+  private def eventually(condition: IO[Boolean]): IO[Unit] =
+    def loop: IO[Unit] = condition.ifM(IO.unit, IO.sleep(50.millis) >> loop)
+    loop.timeout(10.seconds)
