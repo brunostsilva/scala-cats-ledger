@@ -2,6 +2,7 @@ package ledger.service
 
 import cats.effect.MonadCancelThrow
 import cats.syntax.all.*
+import fs2.Stream
 import org.typelevel.log4cats.StructuredLogger
 import ledger.domain.*
 
@@ -67,6 +68,9 @@ object AuditedLedgerService:
 
       def transactionsFor(id: AccountId): F[Either[LedgerError, List[Transaction]]] =
         underlying.transactionsFor(id)
+
+      def streamTransfers(pageSize: Int): Stream[F, Transfer] =
+        underlying.streamTransfers(pageSize)
 
   private def rejection(operation: String, error: LedgerError): Map[String, String] =
     Map("event" -> s"$operation.rejected", "reason" -> error.code)

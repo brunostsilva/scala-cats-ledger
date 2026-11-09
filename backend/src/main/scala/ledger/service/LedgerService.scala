@@ -5,16 +5,21 @@ import java.util.UUID
 import cats.data.EitherT
 import cats.effect.{Ref, Sync}
 import cats.syntax.all.*
+import fs2.{Chunk, Stream}
 import org.typelevel.log4cats.LoggerFactory
 import ledger.domain.*
 
+/** @param transfers append-only log of completed transfers, oldest first: the "table" that
+  *   `streamTransfers` pages through.
+  */
 final case class LedgerState(
     accounts: Map[AccountId, Account],
-    transactions: Map[AccountId, List[Transaction]]
+    transactions: Map[AccountId, List[Transaction]],
+    transfers: Vector[Transfer]
 )
 
 object LedgerState:
-  val empty: LedgerState = LedgerState(Map.empty, Map.empty)
+  val empty: LedgerState = LedgerState(Map.empty, Map.empty, Vector.empty)
 
 trait LedgerService[F[_]]:
   def createAccount(owner: String): F[Account]
@@ -22,6 +27,11 @@ trait LedgerService[F[_]]:
   def deposit(id: AccountId, amount: Money): F[Either[LedgerError, Account]]
   def transfer(from: AccountId, to: AccountId, amount: Money): F[Either[LedgerError, (Account, Account)]]
   def transactionsFor(id: AccountId): F[Either[LedgerError, List[Transaction]]]
+
+  /** Every completed transfer, oldest first, read from storage `pageSize` at a time: the whole log
+    * is never held in memory at once, and the next page is only read when the consumer asks for it.
+    */
+  def streamTransfers(pageSize: Int): Stream[F, Transfer]
 
 object LedgerService:
 
@@ -95,7 +105,8 @@ object LedgerService:
                             accounts = state.accounts.updated(from, updatedFrom).updated(to, updatedTo),
                             transactions = state.transactions
                               .updatedWith(from)(txs => Some(txOut :: txs.getOrElse(Nil)))
-                              .updatedWith(to)(txs => Some(txIn :: txs.getOrElse(Nil)))
+                              .updatedWith(to)(txs => Some(txIn :: txs.getOrElse(Nil))),
+                            transfers = state.transfers :+ Transfer(txId, from, to, amount, now)
                           )
                           (newState, Right((updatedFrom, updatedTo)))
                     })
@@ -106,3 +117,22 @@ object LedgerService:
           if state.accounts.contains(id) then Right(state.transactions.getOrElse(id, Nil))
           else Left(LedgerError.AccountNotFound(id))
         }
+
+      // Keyset-style pagination over the append-only log, the in-memory counterpart of a database
+      // cursor (with Doobie this would be `query.stream` with a fetch size). Each page is a fresh read
+      // of `pageSize` entries, emitted as one chunk; the next one is only read on demand (backpressure).
+      // The log's length when the stream starts bounds it, so transfers made while it runs don't
+      // keep it going forever.
+      def streamTransfers(pageSize: Int): Stream[F, Transfer] =
+        if pageSize <= 0 then Stream.raiseError[F](new IllegalArgumentException(s"pageSize must be positive: $pageSize"))
+        else
+          Stream.eval(ref.get.map(_.transfers.size)).flatMap { end =>
+            Stream.unfoldChunkEval[F, Int, Transfer](0) { offset =>
+              if offset >= end then Sync[F].pure(Option.empty[(Chunk[Transfer], Int)])
+              else
+                ref.get.map { state =>
+                  val page = state.transfers.slice(offset, math.min(offset + pageSize, end))
+                  Option((Chunk.from(page), offset + page.size))
+                }
+            }
+          }
