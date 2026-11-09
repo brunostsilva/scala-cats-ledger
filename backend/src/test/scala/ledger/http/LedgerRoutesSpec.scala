@@ -20,7 +20,8 @@ class LedgerRoutesSpec extends CatsEffectSuite:
 
   private def newApp: IO[HttpApp[IO]] =
     Ref.of[IO, LedgerState](LedgerState.empty).flatMap { ref =>
-      LedgerRoutes.make[IO](LedgerService.inMemory[IO](ref)).map(_.routes.orNotFound)
+      val service = LedgerService.inMemory[IO](ref)
+      TransactionStream.make[IO](service).map(stream => new LedgerRoutes[IO](service, stream).routes.orNotFound)
     }
 
   private def call(app: HttpApp[IO], method: Method, path: String, body: Option[Json] = None): IO[(Status, Json)] =

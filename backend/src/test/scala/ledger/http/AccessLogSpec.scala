@@ -31,8 +31,9 @@ class AccessLogSpec extends CatsEffectSuite:
   /** The same middleware stack as `Main`: request id outside, access log inside, real routes. */
   private def withRoutes(logger: StructuredTestingLogger[IO]): IO[HttpApp[IO]] =
     Ref.of[IO, LedgerState](LedgerState.empty).flatMap { ref =>
-      LedgerRoutes.make[IO](LedgerService.inMemory[IO](ref)).map { ledgerRoutes =>
-        RequestId.httpApp(AccessLog(logger)(ledgerRoutes.routes.orNotFound))
+      val service = LedgerService.inMemory[IO](ref)
+      TransactionStream.make[IO](service).map { stream =>
+        RequestId.httpApp(AccessLog(logger)(new LedgerRoutes[IO](service, stream).routes.orNotFound))
       }
     }
 

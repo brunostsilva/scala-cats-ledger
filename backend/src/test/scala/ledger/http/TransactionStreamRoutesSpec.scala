@@ -30,7 +30,7 @@ class TransactionStreamRoutesSpec extends CatsEffectSuite:
   private def cents(c: Long): Money = Money.fromCents(c).toOption.get
 
   private def app(service: LedgerService[IO], settings: TransactionStreamSettings = TransactionStreamSettings.Default) =
-    LedgerRoutes.make[IO](service, settings).map(_.routes.orNotFound)
+    TransactionStream.make[IO](service, settings).map(stream => new LedgerRoutes[IO](service, stream).routes.orNotFound)
 
   private def get(query: String = ""): Request[IO] =
     Request[IO](Method.GET, Uri.unsafeFromString(s"/transactions/stream$query"))

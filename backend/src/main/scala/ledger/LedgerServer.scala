@@ -8,7 +8,7 @@ import org.http4s.implicits.*
 import org.http4s.server.Server
 import org.http4s.server.middleware.{CORS, RequestId}
 import org.typelevel.log4cats.LoggerFactory
-import ledger.http.{AccessLog, LedgerRoutes, TransactionStreamSettings}
+import ledger.http.{AccessLog, LedgerRoutes, TransactionStream, TransactionStreamSettings}
 import ledger.service.{AuditedLedgerService, LedgerService, LedgerState}
 
 /** The whole application as a `Resource`: state, audited service, middleware and the Ember server.
@@ -40,11 +40,12 @@ object LedgerServer:
       LedgerService.inMemory[IO](ref),
       LoggerFactory[IO].getLoggerFromName(AuditedLedgerService.LoggerName)
     )
-    LedgerRoutes.make[IO](service, streamSettings).map { ledgerRoutes =>
+    TransactionStream.make[IO](service, streamSettings).map { transactionStream =>
+      val routes = new LedgerRoutes[IO](service, transactionStream).routes
       // Request id outermost, so the access log line and the response both carry it.
       RequestId.httpApp(
         AccessLog(LoggerFactory[IO].getLoggerFromName(AccessLog.LoggerName))(
-          CORS.policy.withAllowOriginAll(ledgerRoutes.routes).orNotFound
+          CORS.policy.withAllowOriginAll(routes).orNotFound
         )
       )
     }
