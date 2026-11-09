@@ -3,7 +3,7 @@ package ledger.http
 import java.time.Instant
 import java.util.UUID
 import scala.concurrent.duration.*
-import cats.effect.{IO, Ref}
+import cats.effect.{Deferred, IO, Ref}
 import cats.syntax.all.*
 import com.comcast.ip4s.*
 import fs2.Stream
@@ -16,6 +16,8 @@ import org.http4s.ember.server.EmberServerBuilder
 import org.typelevel.ci.*
 import org.typelevel.log4cats.LoggerFactory
 import org.typelevel.log4cats.noop.NoOpFactory
+import org.typelevel.log4cats.testing.StructuredTestingLogger
+import org.typelevel.log4cats.testing.StructuredTestingLogger.INFO
 import ledger.domain.*
 import ledger.service.{LedgerService, LedgerState, PageSize, TransactionQuery}
 import JsonCodecs.given
@@ -163,14 +165,17 @@ class TransactionStreamRoutesSpec extends CatsEffectSuite:
       assertEquals(body.last, endLine(count = 3, lastSeq = 3))
   }
 
-  test("beyond the stream limit a request gets a 503 with Retry-After, until a stream ends") {
+  test("while the limit of streams is running a request gets a 503 with Retry-After, until one ends") {
     val oneStream = TransactionStreamSettings(PageSize.Default, maxConcurrentStreams = 1)
     for
-      storage <- cursorStorage(endless)
+      storage <- cursorStorage(Stream.emit(sampleEntry(0)) ++ Stream.never[IO]) // one entry, then stays open
       routes  <- app(storage.service, oneStream)
-      first   <- routes.run(get()) // holds the only slot until its body ends
+      first   <- routes.run(get())
+      reading <- Deferred[IO, Unit]
+      client  <- lines(first).evalTap(_ => reading.complete(()).void).compile.drain.start
+      _       <- reading.get // the first stream is running, so it counts against the limit
       second  <- routes.run(get())
-      _       <- lines(first).take(1).compile.drain // the first client stops reading: its slot is released
+      _       <- client.cancel // the first client goes away and its stream ends
       third   <- routes.run(get())
       started <- lines(third).take(1).compile.toList
     yield
@@ -178,6 +183,21 @@ class TransactionStreamRoutesSpec extends CatsEffectSuite:
       assertEquals(second.status, Status.ServiceUnavailable)
       assertEquals(second.headers.get(ci"Retry-After").map(_.head.value), Some("1"))
       assertEquals(third.status, Status.Ok)
+      assertEquals(started.size, 1)
+  }
+
+  test("a response whose body never starts doesn't hold a stream slot") {
+    val oneStream = TransactionStreamSettings(PageSize.Default, maxConcurrentStreams = 1)
+    for
+      storage   <- cursorStorage(endless)
+      routes    <- app(storage.service, oneStream)
+      // Never read, as when the server fails to write the headers to a client that already left.
+      abandoned <- routes.run(get())
+      next      <- routes.run(get())
+      started   <- lines(next).take(1).compile.toList
+    yield
+      assertEquals(abandoned.status, Status.Ok)
+      assertEquals(next.status, Status.Ok)
       assertEquals(started.size, 1)
   }
 
@@ -211,11 +231,17 @@ class TransactionStreamRoutesSpec extends CatsEffectSuite:
       assertEquals(closed, 1)
   }
 
-  test("over a real socket, a client that disconnects mid-stream makes the server release the cursor") {
+  test("over a real socket, a client that disconnects mid-stream releases the cursor and is logged as interrupted") {
+    val accessLog = StructuredTestingLogger.impl[IO]()
     for
       storage <- cursorStorage(endless)
       routes  <- app(storage.service)
-      server   = EmberServerBuilder.default[IO].withHost(host"127.0.0.1").withPort(port"0").withHttpApp(routes).build
+      server   = EmberServerBuilder
+                   .default[IO]
+                   .withHost(host"127.0.0.1")
+                   .withPort(port"0")
+                   .withHttpApp(AccessLog(accessLog)(routes))
+                   .build
       result  <- server.both(EmberClientBuilder.default[IO].build).use { (running, client) =>
                    val request = Request[IO](Method.GET, running.baseUri / "transactions" / "stream")
                    for
@@ -223,11 +249,20 @@ class TransactionStreamRoutesSpec extends CatsEffectSuite:
                      firstFew <- client.stream(request).flatMap(lines).take(3).compile.toList
                      // The server only notices on its next write, so wait (bounded) for the release.
                      _        <- eventually(storage.closed.get.map(_ == 1))
+                     _        <- eventually(accessLog.logged.map(_.nonEmpty))
                      opened   <- storage.opened.get
                    yield (firstFew.size, opened)
                  }
       closed  <- storage.closed.get
-    yield assertEquals((result._1, result._2, closed), (3, 1, 1))
+      logged  <- accessLog.logged
+    yield
+      assertEquals((result._1, result._2, closed), (3, 1, 1))
+      // A client going away is a closed connection (INFO), not a failed response (WARN).
+      logged match
+        case Vector(INFO(_, None, context)) =>
+          assertEquals(context.get("http.response.outcome"), Some("interrupted"))
+          assertEquals(context.get("http.response.status_code"), Some("200"))
+        case other => fail(s"expected one INFO access log line, got $other")
   }
 
   /** Polls `condition` every 50 ms, failing after 10 s. */

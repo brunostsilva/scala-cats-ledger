@@ -1,7 +1,6 @@
 package ledger.http
 
-import cats.effect.Async
-import cats.effect.std.Semaphore
+import cats.effect.{Async, Ref}
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.syntax.*
@@ -14,38 +13,42 @@ import JsonCodecs.given
 
 /** The response of `GET /transactions/stream`, for a query already validated by the route.
   *
-  * Owns the slots that cap how many streams run at once: beyond `maxConcurrentStreams` a request gets
-  * a 503 with `Retry-After`. A slot is released by the response body's finalizer, so when the stream
-  * completes, fails or the client disconnects. (As with http4s' own request-counting middlewares, a
-  * server that never evaluated the body wouldn't release it; Ember always does.)
+  * Caps how many streams run at once: when `maxConcurrentStreams` are running, a request gets a 503
+  * with `Retry-After`. Only streams that actually started are counted: the count goes up when the
+  * response body starts and down in its finalizer (completion, failure or client disconnect).
+  * Reserving a slot before the 200 instead would leak it whenever the body never starts, e.g. when
+  * Ember fails to write the headers to a client that already reset the connection, and enough leaks
+  * would lock the endpoint. The trade-off: requests arriving at the same moment can all pass the
+  * check before their bodies start, so a burst can briefly run a few streams over the limit.
   */
 final class TransactionStream[F[_]: Async] private (
     service: LedgerService[F],
     settings: TransactionStreamSettings,
-    slots: Semaphore[F]
+    running: Ref[F, Int]
 ):
 
   def defaultPageSize: PageSize = settings.defaultPageSize
 
   def respond(query: TransactionQuery): F[Response[F]] =
-    slots.tryAcquire.ifM(ndjson(query), tooManyStreams)
+    running.get.flatMap(count => if count < settings.maxConcurrentStreams then ndjson(query) else tooManyStreams)
 
   // One transaction per line, oldest first, then a StreamEnd line. Each page is encoded and written as
   // soon as it's read, and the next one is only read when the client keeps up (backpressure), so
   // nothing holds the whole ledger in memory. If the client disconnects or the stream fails, http4s
-  // interrupts the body stream and its finalizers run: the slot is released, and so would be a storage
-  // cursor acquired with Stream.bracket/resource. StreamEnd is only written when the stream completes,
-  // so a client can tell a response cut short (after the 200 was sent) from a complete one.
+  // interrupts the body stream and its finalizers run: the stream stops counting against the limit,
+  // and a storage cursor acquired with Stream.bracket/resource would be released. StreamEnd is only
+  // written when the stream completes, so a client can tell a response cut short (after the 200 was
+  // sent) from a complete one.
   private def ndjson(query: TransactionQuery): F[Response[F]] =
     val entries: Stream[F, Option[LedgerEntry]] = service.streamTransactions(query).map(Option(_)) ++ Stream.emit(None)
-    val body = entries
+    val lines = entries
       .mapAccumulate((0L, query.after)) {
         case ((count, _), Some(entry)) => ((count + 1, entry.seq), entry.asJson.noSpaces)
         case ((count, lastSeq), None)  => ((count, lastSeq), JsonCodecs.StreamEnd(true, count, lastSeq).asJson.noSpaces)
       }
       .map((_, line) => line + "\n")
       .through(fs2.text.utf8.encode)
-      .onFinalize(slots.release)
+    val body = Stream.bracket(running.update(_ + 1))(_ => running.update(_ - 1)) >> lines
     Response[F](Status.Ok)
       .withEntity(body)
       .putHeaders(`Content-Type`(TransactionStream.NdJson), `Transfer-Encoding`(TransferCoding.chunked))
@@ -69,4 +72,4 @@ object TransactionStream:
       service: LedgerService[F],
       settings: TransactionStreamSettings = TransactionStreamSettings.Default
   ): F[TransactionStream[F]] =
-    Semaphore[F](settings.maxConcurrentStreams.toLong).map(slots => new TransactionStream[F](service, settings, slots))
+    Ref.of[F, Int](0).map(running => new TransactionStream[F](service, settings, running))

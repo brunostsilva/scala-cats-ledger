@@ -129,8 +129,10 @@ these loggers:
   ticket can quote it.
 - **Access log written when the body ends.** The line is logged once the response body has been
   sent, so streamed responses get their real duration, and `http.response.outcome` says how the
-  body ended: `completed`, `failed` (after the status was sent, at `WARN`) or `interrupted`
-  (usually the client going away).
+  body ended: `completed`, `failed` (after the status was sent, at `WARN`) or `interrupted` (the
+  connection went away, at `INFO`). A client leaving mid-stream is only noticed when the next write
+  fails with a connection error (broken pipe, connection reset), which is why connection errors
+  count as `interrupted`, not `failed`.
 - **No personal data.** Owner names, balances, request bodies, headers and query strings are
   never logged. The tests assert it.
 
@@ -197,8 +199,13 @@ curl -N "localhost:8080/transactions/stream"
   client can resume with `after` set to the last `seq` it received. `lastSeq` is where to resume
   from after a complete stream, so a client can poll for new transactions with `after=<lastSeq>`.
 - **Errors before streaming:** invalid parameters are a `400`, an unknown account a `404`, and
-  beyond the concurrent stream limit a `503` with `Retry-After`. They are all decided before the
-  `200`, since a stream can't change its status once it has started.
+  while the limit of concurrent streams is running a `503` with `Retry-After`. They are all decided
+  before the `200`, since a stream can't change its status once it has started.
+- **Concurrent stream limit:** only streams that actually started count: the count goes up when the
+  response body starts and down when it ends. Reserving a slot before the `200` would leak it
+  whenever the body never starts (e.g. the server fails to write the headers to a client that
+  already left), and enough leaks would lock the endpoint. The trade-off is a soft limit: requests
+  arriving at the same moment can briefly run a few streams over it.
 - **Memory:** the ledger is never collected into a list. `LedgerService.streamTransactions` reads
   storage one page at a time (keyset pagination by `seq` over the append-only log) and each page is
   encoded and written before the next one is read. The storage is in memory in this project; with
@@ -209,10 +216,10 @@ curl -N "localhost:8080/transactions/stream"
 - **Consistency:** a stream covers the transactions that existed when it started; later ones are
   picked up by the next request with `after`.
 - **Resource safety:** if the client disconnects or the stream fails, http4s interrupts the body
-  stream and its finalizers run, so the stream's slot and any storage cursor acquired with
-  `Stream.bracket`/`Stream.resource` are released.
+  stream and its finalizers run, so the stream stops counting against the limit and any storage
+  cursor acquired with `Stream.bracket`/`Stream.resource` is released.
 - **Configuration:** `TRANSACTION_STREAM_PAGE_SIZE` (default page size, 1 to 1000, default `500`) and
-  `TRANSACTION_STREAM_MAX_CONCURRENT` (streams served at once, default `8`). Invalid values stop
+  `TRANSACTION_STREAM_MAX_CONCURRENT` (streams running at once, default `8`). Invalid values stop
   the app at startup with a message.
 
 ## Tech stack
