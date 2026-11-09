@@ -81,6 +81,10 @@ The backend suite (munit + munit-cats-effect) covers:
   (log4cats → SLF4J → Logback with `logback.xml`), so its log lines are printed in the `sbt test`
   output, in CI too, and checks what Logback received: every layer, structured fields in the MDC,
   no owner names. The other tests record log lines in memory instead.
+- **Transfer streaming:** paging, order and snapshot bound of `streamTransfers`
+  (`TransferStreamSpec`); the NDJSON output and headers, an endless ledger read lazily, a failure
+  mid-stream, and a client disconnecting over a real socket, with the storage cursor released in
+  every case (`TransferStreamRoutesSpec`); and the endpoint on the full app (`LedgerServerSpec`).
 - **Service:** deposits, transfers, transaction history, and **concurrency**: parallel deposits are
   all applied, and parallel transfers never overdraw an account, since every mutation is an atomic
   `Ref` update.
@@ -158,8 +162,34 @@ logger never fails a committed change, since turning it into a 500 would invite 
 | POST   | `/accounts/{id}/deposit`        | `{ "amount": number }`                 | Deposit into an account            |
 | POST   | `/transfers`                    | `{ "from", "to", "amount": number }`   | Transfer between two accounts      |
 | GET    | `/accounts/{id}/transactions`   | —                                       | List an account's transaction log  |
+| GET    | `/stream/transfers`             | —                                       | Stream every transfer as NDJSON    |
+
+### Streaming transfers
+
+`GET /stream/transfers` returns every completed transfer, oldest first, as
+[NDJSON](https://github.com/ndjson/ndjson-spec): one JSON object per line, with
+`Content-Type: application/x-ndjson` and `Transfer-Encoding: chunked`.
+
+```bash
+curl -N localhost:8080/stream/transfers
+{"id":"0c7e…","from":"6f1c…","to":"9a2e…","amount":2.00,"occurredAt":"2026-11-09T14:02:11.481Z"}
+{"id":"5b0d…","from":"9a2e…","to":"6f1c…","amount":1.00,"occurredAt":"2026-11-09T14:02:12.107Z"}
+```
+
+- **Memory:** the ledger is never collected into a list. `LedgerService.streamTransfers` reads
+  storage in pages of 500 (`Stream.unfoldChunkEval` over the append-only transfer log), and each page
+  is encoded and written before the next one is read. The storage is in memory in this project; with
+  a database the same `Stream[F, Transfer]` would come from a cursor (e.g. Doobie's `query.stream`).
+- **Backpressure:** fs2 only reads the next page when the client has taken the previous one, so a
+  slow client slows the reads down instead of piling data up on the server.
+- **Consistency:** the stream covers the transfers that existed when it started; transfers made
+  while it runs appear in the next request.
+- **Resource safety:** if the client disconnects or the stream fails, http4s interrupts the body
+  stream and its finalizers run, so a storage cursor acquired with `Stream.bracket`/`Stream.resource`
+  is always released. A failure after the first lines can only cut the response short, since the
+  `200` was already sent.
 
 ## Tech stack
 
-Scala 3.10 · JDK 25 · Cats Effect 3 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
+Scala 3.10 · JDK 25 · Cats Effect 3 · fs2 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
 Vitest · Testing Library
