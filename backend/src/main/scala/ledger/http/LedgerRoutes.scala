@@ -3,9 +3,10 @@ package ledger.http
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.syntax.*
-import org.http4s.{EntityDecoder, EntityEncoder, HttpRoutes}
+import org.http4s.{EntityDecoder, EntityEncoder, HttpRoutes, MediaType, TransferCoding}
 import org.http4s.circe.{jsonEncoder, jsonEncoderOf, jsonOf}
 import org.http4s.dsl.Http4sDsl
+import org.http4s.headers.{`Content-Type`, `Transfer-Encoding`}
 import ledger.domain.*
 import ledger.service.LedgerService
 import JsonCodecs.given
@@ -80,6 +81,19 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
                     BadRequest(JsonCodecs.ErrorResponse("Invalid transfer request").asJson)
       yield resp
 
+    // Every transfer as NDJSON (one JSON object per line), streamed while it is read from storage:
+    // each page is encoded and written as soon as it's read, the next page is only read when the
+    // client keeps up (backpressure), and nothing holds the whole ledger in memory. If the client
+    // disconnects or the stream fails, http4s interrupts the body stream, which runs its finalizers,
+    // so a storage cursor acquired with Stream.resource/bracket is always released. A failure after
+    // the 200 and the first lines have been sent can only cut the response short.
+    case GET -> Root / "stream" / "transfers" =>
+      val ndjson = service
+        .streamTransfers(LedgerRoutes.TransferStreamPageSize)
+        .map(transfer => transfer.asJson.noSpaces + "\n")
+        .through(fs2.text.utf8.encode)
+      Ok(ndjson, `Content-Type`(LedgerRoutes.NdJson), `Transfer-Encoding`(TransferCoding.chunked))
+
     case GET -> Root / "accounts" / rawId / "transactions" =>
       AccountId.fromString(rawId) match
         case Left(err) => BadRequest(JsonCodecs.ErrorResponse(err).asJson)
@@ -89,3 +103,10 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
             case Left(err)  => errorResponse(err)
           }
   }
+
+object LedgerRoutes:
+
+  /** Transfers read from storage per page by `GET /stream/transfers`. */
+  val TransferStreamPageSize = 500
+
+  val NdJson: MediaType = MediaType.unsafeParse("application/x-ndjson")

@@ -29,6 +29,7 @@ object JsonCodecs:
   // defined above), so its codecs are derived here instead of with `derives` on the case classes.
   given Codec.AsObject[Account]     = Codec.AsObject.derived
   given Codec.AsObject[Transaction] = Codec.AsObject.derived
+  given Codec.AsObject[Transfer]    = Codec.AsObject.derived
 
   final case class CreateAccountRequest(owner: String) derives Codec.AsObject
 
