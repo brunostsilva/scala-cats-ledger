@@ -155,3 +155,15 @@ class AccessLogSpec extends CatsEffectSuite:
         assert(message.endsWith("(connection closed: Broken pipe)"), message)
       case other => fail(s"expected one INFO line, got $other")
   }
+
+  test("a response with a body built in memory is logged when returned, even if its body is never sent") {
+    val logger = StructuredTestingLogger.impl[IO]()
+    for
+      app      <- withRoutes(logger)
+      response <- app.run(Request[IO](Method.GET, Uri.unsafeFromString(s"/accounts/$unknownId"))) // body never read
+      logged   <- logger.logged
+    yield
+      assertEquals(response.status, Status.NotFound)
+      assertEquals(logged.flatMap(_.ctx.get("http.response.outcome")), Vector("completed"))
+      assertEquals(logged.flatMap(_.ctx.get("http.response.status_code")), Vector("404"))
+  }
