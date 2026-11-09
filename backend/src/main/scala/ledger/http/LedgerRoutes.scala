@@ -10,7 +10,11 @@ import ledger.domain.*
 import ledger.service.LedgerService
 import JsonCodecs.given
 
-final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sDsl[F]:
+/** The HTTP API: routing, plus mapping between JSON and the service. `GET /transactions/stream`
+  * delegates its parameters to [[TransactionStreamParams]] and its response to [[TransactionStream]].
+  */
+final class LedgerRoutes[F[_]: Async](service: LedgerService[F], transactionStream: TransactionStream[F])
+    extends Http4sDsl[F]:
 
   private given EntityDecoder[F, JsonCodecs.CreateAccountRequest] = jsonOf
   private given EntityDecoder[F, JsonCodecs.AmountRequest]        = jsonOf
@@ -23,7 +27,7 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
     case LedgerError.AccountNotFound(id) =>
       NotFound(JsonCodecs.ErrorResponse(s"Account not found: ${id.asString}").asJson)
     case LedgerError.InsufficientFunds(id, balance, requested) =>
-      UnprocessableEntity(
+      UnprocessableContent(
         JsonCodecs
           .ErrorResponse(
             s"Account ${id.asString} has insufficient funds: balance=${balance.toBigDecimal}, requested=${requested.toBigDecimal}"
@@ -31,9 +35,13 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
           .asJson
       )
     case LedgerError.SameAccountTransfer(id) =>
-      UnprocessableEntity(JsonCodecs.ErrorResponse(s"Cannot transfer to the same account: ${id.asString}").asJson)
+      UnprocessableContent(JsonCodecs.ErrorResponse(s"Cannot transfer to the same account: ${id.asString}").asJson)
     case LedgerError.InvalidAmount(message) =>
-      UnprocessableEntity(JsonCodecs.ErrorResponse(message).asJson)
+      UnprocessableContent(JsonCodecs.ErrorResponse(message).asJson)
+
+  private object AccountParam  extends OptionalQueryParamDecoderMatcher[String]("account")
+  private object AfterParam    extends OptionalQueryParamDecoderMatcher[String]("after")
+  private object PageSizeParam extends OptionalQueryParamDecoderMatcher[String]("pageSize")
 
   val routes: HttpRoutes[F] = HttpRoutes.of[F] {
     case req @ POST -> Root / "accounts" =>
@@ -59,7 +67,7 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
           for
             body <- req.as[JsonCodecs.AmountRequest]
             resp <- Money.fromDecimal(body.amount) match
-                      case Left(err) => UnprocessableEntity(JsonCodecs.ErrorResponse(err).asJson)
+                      case Left(err) => UnprocessableContent(JsonCodecs.ErrorResponse(err).asJson)
                       case Right(amount) =>
                         service.deposit(id, amount).flatMap {
                           case Right(account) => Ok(account)
@@ -79,6 +87,17 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
                   case _ =>
                     BadRequest(JsonCodecs.ErrorResponse("Invalid transfer request").asJson)
       yield resp
+
+    // The ledger as NDJSON. Everything that can be refused (bad parameters, unknown account, too many
+    // streams) is decided before the 200, since a stream can't change its status once it has started.
+    case GET -> Root / "transactions" / "stream" :? AccountParam(account) +& AfterParam(after) +& PageSizeParam(pageSize) =>
+      TransactionStreamParams.parse(account, after, pageSize, transactionStream.defaultPageSize) match
+        case Left(message) => BadRequest(JsonCodecs.ErrorResponse(message).asJson)
+        case Right(query) =>
+          query.account.traverse(service.getAccount).map(_.sequence).flatMap {
+            case Left(err) => errorResponse(err)
+            case Right(_)  => transactionStream.respond(query)
+          }
 
     case GET -> Root / "accounts" / rawId / "transactions" =>
       AccountId.fromString(rawId) match

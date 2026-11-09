@@ -81,6 +81,13 @@ The backend suite (munit + munit-cats-effect) covers:
   (log4cats → SLF4J → Logback with `logback.xml`), so its log lines are printed in the `sbt test`
   output, in CI too, and checks what Logback received: every layer, structured fields in the MDC,
   no owner names. The other tests record log lines in memory instead.
+- **Ledger streaming:** ledger order and consecutive `seq`, paging, the account filter, `after`,
+  the snapshot bound, rejected operations staying out of the ledger and concurrent transfers
+  recorded exactly once (`TransactionStreamSpec`); the NDJSON output, `StreamEnd` line, parameter
+  validation (400/404 before any streaming), the stream limit (503), an endless ledger read lazily,
+  a failure mid-stream and a client disconnecting over a real socket, with the storage cursor
+  released in every case (`TransactionStreamRoutesSpec`); `PageSize`, the stream settings, and the
+  endpoint on the full app (`LedgerServerSpec`).
 - **Service:** deposits, transfers, transaction history, and **concurrency**: parallel deposits are
   all applied, and parallel transfers never overdraw an account, since every mutation is an atomic
   `Ref` update.
@@ -120,6 +127,14 @@ these loggers:
 - **Request ids.** http4s' `RequestId` middleware reuses the caller's `X-Request-ID` header or
   generates one, adds it to the access log line and returns it in the response, so a support
   ticket can quote it.
+- **When the access log line is written.** A body built in memory (e.g. a JSON reply) is logged as
+  soon as the route returns it, so the request is logged even if the server never gets to send it.
+  A streamed body (`GET /transactions/stream`) is logged when it ends, with its real duration, and
+  `http.response.outcome` says how it ended: `completed`, `failed` (after the status was sent, at
+  `WARN`) or `interrupted` (the connection went away, at `INFO`). A client leaving mid-stream is only
+  noticed when the next write fails with a connection error (broken pipe, connection reset), which is
+  why connection errors count as `interrupted`, not `failed`. A stream whose headers never reach the
+  client leaves no line: http4s has no hook for it.
 - **No personal data.** Owner names, balances, request bodies, headers and query strings are
   never logged. The tests assert it.
 
@@ -158,8 +173,63 @@ logger never fails a committed change, since turning it into a 500 would invite 
 | POST   | `/accounts/{id}/deposit`        | `{ "amount": number }`                 | Deposit into an account            |
 | POST   | `/transfers`                    | `{ "from", "to", "amount": number }`   | Transfer between two accounts      |
 | GET    | `/accounts/{id}/transactions`   | —                                       | List an account's transaction log  |
+| GET    | `/transactions/stream`          | —                                       | Stream the ledger as NDJSON        |
+
+### Streaming the ledger
+
+`GET /transactions/stream` returns the ledger as [NDJSON](https://github.com/ndjson/ndjson-spec),
+oldest first: every transaction of every account (deposits and both legs of each transfer), one
+JSON object per line, in the same shape as `GET /accounts/{id}/transactions` plus its position in
+the ledger, `seq`. A last line marks the end of the stream:
+
+```bash
+curl -N "localhost:8080/transactions/stream"
+{"seq":1,"id":"5b0d…","accountId":"6f1c…","counterpartyId":null,"txType":"Deposit","amount":100.00,"balanceAfter":100.00,"occurredAt":"2026-11-09T14:02:11.481Z"}
+{"seq":2,"id":"0c7e…","accountId":"6f1c…","counterpartyId":"9a2e…","txType":"Transfer","amount":2.50,"balanceAfter":97.50,"occurredAt":"2026-11-09T14:02:12.107Z"}
+{"seq":3,"id":"0c7e…","accountId":"9a2e…","counterpartyId":"6f1c…","txType":"Transfer","amount":2.50,"balanceAfter":2.50,"occurredAt":"2026-11-09T14:02:12.107Z"}
+{"end":true,"count":3,"lastSeq":3}
+```
+
+| Query parameter | Default | Description |
+|---|---|---|
+| `account` | all accounts | Only this account's transactions: its history, oldest first |
+| `after` | `0` | Only transactions with a greater `seq`, to resume a stream |
+| `pageSize` | `500` | Transactions read from storage at a time, 1 to 1000 |
+
+- **Complete or cut short:** the `{"end":true,…}` line is only written when the stream completes. A
+  response without it was cut short (e.g. a storage failure after the `200` was sent), and the
+  client can resume with `after` set to the last `seq` it received. `lastSeq` is where to resume
+  from after a complete stream, so a client can poll for new transactions with `after=<lastSeq>`.
+- **Errors before streaming:** invalid parameters are a `400`, an unknown account a `404`, an
+  `after` beyond the end of the ledger a `409` (see below), and while the limit of concurrent
+  streams is running a `503` with `Retry-After`. They are all decided before the `200`, since a
+  stream can't change its status once it has started.
+- **A cursor beyond the end:** `seq` starts again at 1 when this in-memory ledger restarts, so an
+  `after` saved before a restart can point past the end. Streaming nothing and echoing it back would
+  make the client silently skip every new transaction, so it's a `409` telling the client to restart
+  from `after=0`. An `after` equal to the last `seq` is the normal "nothing new yet" poll.
+- **Concurrent stream limit:** only streams that actually started count: the count goes up when the
+  response body starts and down when it ends. Reserving a slot before the `200` would leak it
+  whenever the body never starts (e.g. the server fails to write the headers to a client that
+  already left), and enough leaks would lock the endpoint. The trade-off is a soft limit: requests
+  arriving at the same moment can briefly run a few streams over it.
+- **Memory:** the ledger is never collected into a list. `LedgerService.streamTransactions` reads
+  storage one page at a time (keyset pagination by `seq` over the append-only log) and each page is
+  encoded and written before the next one is read. The storage is in memory in this project; with
+  a database the same `Stream` would come from a cursor over
+  `WHERE seq > :after ORDER BY seq LIMIT :pageSize` (e.g. Doobie's `query.stream`).
+- **Backpressure:** fs2 only reads the next page when the client has taken the previous one, so a
+  slow client slows the reads down instead of piling data up on the server.
+- **Consistency:** a stream covers the transactions that existed when it started; later ones are
+  picked up by the next request with `after`.
+- **Resource safety:** if the client disconnects or the stream fails, http4s interrupts the body
+  stream and its finalizers run, so the stream stops counting against the limit and any storage
+  cursor acquired with `Stream.bracket`/`Stream.resource` is released.
+- **Configuration:** `TRANSACTION_STREAM_PAGE_SIZE` (default page size, 1 to 1000, default `500`) and
+  `TRANSACTION_STREAM_MAX_CONCURRENT` (streams running at once, default `8`). Invalid values stop
+  the app at startup with a message.
 
 ## Tech stack
 
-Scala 3.10 · JDK 25 · Cats Effect 3 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
+Scala 3.10 · JDK 25 · Cats Effect 3 · fs2 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
 Vitest · Testing Library

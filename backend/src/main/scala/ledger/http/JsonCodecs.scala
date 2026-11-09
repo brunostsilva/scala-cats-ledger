@@ -1,6 +1,7 @@
 package ledger.http
 
-import io.circe.{Codec, Decoder, Encoder}
+import io.circe.{Codec, Decoder, Encoder, Json}
+import io.circe.syntax.*
 import ledger.domain.*
 
 /** JSON wire format for the API. Money crosses the HTTP boundary as a decimal amount
@@ -30,6 +31,10 @@ object JsonCodecs:
   given Codec.AsObject[Account]     = Codec.AsObject.derived
   given Codec.AsObject[Transaction] = Codec.AsObject.derived
 
+  /** A ledger entry on the wire is its transaction, as in an account's history, plus its `seq`. */
+  given Encoder.AsObject[LedgerEntry] =
+    Encoder.AsObject.instance(entry => ("seq" -> Json.fromLong(entry.seq)) +: entry.transaction.asJsonObject)
+
   final case class CreateAccountRequest(owner: String) derives Codec.AsObject
 
   final case class AmountRequest(amount: BigDecimal) derives Codec.AsObject
@@ -39,3 +44,8 @@ object JsonCodecs:
   final case class TransferResponse(from: Account, to: Account) derives Codec.AsObject
 
   final case class ErrorResponse(message: String) derives Codec.AsObject
+
+  /** Last line of a transaction stream, only written when the stream completes: a response without it
+    * was cut short. `lastSeq` is the `after` to resume from (the `after` asked for if nothing matched).
+    */
+  final case class StreamEnd(end: Boolean, count: Long, lastSeq: Long) derives Codec.AsObject

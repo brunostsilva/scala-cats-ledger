@@ -19,8 +19,9 @@ class LedgerRoutesSpec extends CatsEffectSuite:
   private val unknownId = "00000000-0000-4000-8000-000000000000"
 
   private def newApp: IO[HttpApp[IO]] =
-    Ref.of[IO, LedgerState](LedgerState.empty).map { ref =>
-      new LedgerRoutes[IO](LedgerService.inMemory[IO](ref)).routes.orNotFound
+    Ref.of[IO, LedgerState](LedgerState.empty).flatMap { ref =>
+      val service = LedgerService.inMemory[IO](ref)
+      TransactionStream.make[IO](service).map(stream => new LedgerRoutes[IO](service, stream).routes.orNotFound)
     }
 
   private def call(app: HttpApp[IO], method: Method, path: String, body: Option[Json] = None): IO[(Status, Json)] =
@@ -104,7 +105,7 @@ class LedgerRoutesSpec extends CatsEffectSuite:
       (missing, _)           <- deposit(app, unknownId, "5")
       (invalid, _)           <- deposit(app, "nope", "5")
     yield
-      assertEquals(negative, Status.UnprocessableEntity)
+      assertEquals(negative, Status.UnprocessableContent)
       assert(message(negativeJs).startsWith("Amount cannot be negative"), message(negativeJs))
       assertEquals(missing, Status.NotFound)
       assertEquals(invalid, Status.BadRequest)
@@ -132,9 +133,9 @@ class LedgerRoutesSpec extends CatsEffectSuite:
       (tooMuch, tooMuchJson) <- transfer(app, alice, bob, "10.01")
       (self, selfJson)       <- transfer(app, alice, alice, "1")
     yield
-      assertEquals(tooMuch, Status.UnprocessableEntity)
+      assertEquals(tooMuch, Status.UnprocessableContent)
       assert(message(tooMuchJson).contains("insufficient funds"), message(tooMuchJson))
-      assertEquals(self, Status.UnprocessableEntity)
+      assertEquals(self, Status.UnprocessableContent)
       assertEquals(message(selfJson), s"Cannot transfer to the same account: $alice")
   }
 

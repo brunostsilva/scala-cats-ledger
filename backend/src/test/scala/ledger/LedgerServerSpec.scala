@@ -1,5 +1,6 @@
 package ledger
 
+import scala.concurrent.duration.*
 import cats.effect.{IO, Resource}
 import com.comcast.ip4s.*
 import io.circe.Json
@@ -42,6 +43,17 @@ class LedgerServerSpec extends CatsEffectSuite:
 
   private def header(reply: Reply, name: CIString): Option[String] = reply.headers.get(name).map(_.head.value)
 
+  /** The server writes an access log line once it has sent the whole response body, which can be
+    * just after the client has read it, so wait (up to 5 s) until `count` access lines are recorded.
+    */
+  private def loggedWithAccessLines(app: Running, count: Int): IO[Vector[StructuredTestingLogger.LogMessage]] =
+    def loop: IO[Vector[StructuredTestingLogger.LogMessage]] =
+      app.logger.logged.flatMap { logged =>
+        if logged.count(_.ctx.contains("http.request.id")) >= count then IO.pure(logged)
+        else IO.sleep(20.millis) >> loop
+      }
+    loop.timeout(5.seconds)
+
   test("a deposit and a transfer go through routes, service and audit over real HTTP") {
     running.use { app =>
       for
@@ -75,7 +87,7 @@ class LedgerServerSpec extends CatsEffectSuite:
     running.use { app =>
       for
         reply  <- post(app, app.base / "accounts", Json.obj("owner" -> Json.fromString("Carol")))
-        logged <- app.logger.logged
+        logged <- loggedWithAccessLines(app, count = 1)
       yield
         val requestId = header(reply, ci"X-Request-ID")
         assertEquals(reply.status, Status.Created)
@@ -84,6 +96,7 @@ class LedgerServerSpec extends CatsEffectSuite:
         val access = logged.filter(_.ctx.contains("http.request.id"))
         assertEquals(access.flatMap(_.ctx.get("http.request.id")), requestId.toVector)
         assertEquals(access.flatMap(_.ctx.get("http.response.status_code")), Vector("201"))
+        assertEquals(access.flatMap(_.ctx.get("http.response.outcome")), Vector("completed"))
     }
   }
 
@@ -105,5 +118,38 @@ class LedgerServerSpec extends CatsEffectSuite:
         assertEquals(reply.status, Status.UnprocessableContent)
         assertEquals(logged.flatMap(_.ctx.get("reason")), Vector("same_account"))
         assert(!logged.exists(_.message.startsWith("Creating transfer")), logged.map(_.message))
+    }
+  }
+
+  test("GET /transactions/stream streams the ledger built through the API as chunked NDJSON") {
+    running.use { app =>
+      for
+        alice <- createAccount(app, "Alice")
+        bob   <- createAccount(app, "Bob")
+        _     <- post(app, app.base / "accounts" / alice / "deposit", Json.obj("amount" -> Json.fromBigDecimal(BigDecimal("10"))))
+        _     <- post(
+                   app,
+                   app.base / "transfers",
+                   Json.obj(
+                     "from"   -> Json.fromString(alice),
+                     "to"     -> Json.fromString(bob),
+                     "amount" -> Json.fromBigDecimal(BigDecimal("3"))
+                   )
+                 )
+        reply <- app.client
+                   .run(Request[IO](Method.GET, app.base / "transactions" / "stream"))
+                   .use(response => response.bodyText.compile.string.map(body => (response.status, response.headers, body)))
+      yield
+        val (status, headers, body) = reply
+        assertEquals(status, Status.Ok)
+        assertEquals(headers.get(ci"Content-Type").map(_.head.value), Some("application/x-ndjson"))
+        assert(headers.get(ci"Transfer-Encoding").exists(_.head.value.contains("chunked")), headers)
+        val lines = body.linesIterator.filter(_.nonEmpty).toList.map(line => io.circe.jawn.parse(line).toOption.get.hcursor)
+        // The deposit, Alice's leg and Bob's leg of the transfer, then the StreamEnd line.
+        assertEquals(lines.init.map(_.get[Long]("seq").toOption), List(Some(1L), Some(2L), Some(3L)))
+        assertEquals(lines.init.map(_.get[String]("accountId").toOption), List(Some(alice), Some(alice), Some(bob)))
+        assertEquals(lines(2).get[BigDecimal]("amount").toOption, Some(BigDecimal("3.00")))
+        assertEquals(lines.last.get[Long]("lastSeq").toOption, Some(3L))
+        assertEquals(lines.last.get[Boolean]("end").toOption, Some(true))
     }
   }
