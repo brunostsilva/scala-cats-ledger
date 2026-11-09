@@ -24,7 +24,7 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
     case LedgerError.AccountNotFound(id) =>
       NotFound(JsonCodecs.ErrorResponse(s"Account not found: ${id.asString}").asJson)
     case LedgerError.InsufficientFunds(id, balance, requested) =>
-      UnprocessableEntity(
+      UnprocessableContent(
         JsonCodecs
           .ErrorResponse(
             s"Account ${id.asString} has insufficient funds: balance=${balance.toBigDecimal}, requested=${requested.toBigDecimal}"
@@ -32,9 +32,9 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
           .asJson
       )
     case LedgerError.SameAccountTransfer(id) =>
-      UnprocessableEntity(JsonCodecs.ErrorResponse(s"Cannot transfer to the same account: ${id.asString}").asJson)
+      UnprocessableContent(JsonCodecs.ErrorResponse(s"Cannot transfer to the same account: ${id.asString}").asJson)
     case LedgerError.InvalidAmount(message) =>
-      UnprocessableEntity(JsonCodecs.ErrorResponse(message).asJson)
+      UnprocessableContent(JsonCodecs.ErrorResponse(message).asJson)
 
   val routes: HttpRoutes[F] = HttpRoutes.of[F] {
     case req @ POST -> Root / "accounts" =>
@@ -60,7 +60,7 @@ final class LedgerRoutes[F[_]: Async](service: LedgerService[F]) extends Http4sD
           for
             body <- req.as[JsonCodecs.AmountRequest]
             resp <- Money.fromDecimal(body.amount) match
-                      case Left(err) => UnprocessableEntity(JsonCodecs.ErrorResponse(err).asJson)
+                      case Left(err) => UnprocessableContent(JsonCodecs.ErrorResponse(err).asJson)
                       case Right(amount) =>
                         service.deposit(id, amount).flatMap {
                           case Right(account) => Ok(account)

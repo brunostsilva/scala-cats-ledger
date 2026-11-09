@@ -104,7 +104,7 @@ class LedgerRoutesSpec extends CatsEffectSuite:
       (missing, _)           <- deposit(app, unknownId, "5")
       (invalid, _)           <- deposit(app, "nope", "5")
     yield
-      assertEquals(negative, Status.UnprocessableEntity)
+      assertEquals(negative, Status.UnprocessableContent)
       assert(message(negativeJs).startsWith("Amount cannot be negative"), message(negativeJs))
       assertEquals(missing, Status.NotFound)
       assertEquals(invalid, Status.BadRequest)
@@ -132,9 +132,9 @@ class LedgerRoutesSpec extends CatsEffectSuite:
       (tooMuch, tooMuchJson) <- transfer(app, alice, bob, "10.01")
       (self, selfJson)       <- transfer(app, alice, alice, "1")
     yield
-      assertEquals(tooMuch, Status.UnprocessableEntity)
+      assertEquals(tooMuch, Status.UnprocessableContent)
       assert(message(tooMuchJson).contains("insufficient funds"), message(tooMuchJson))
-      assertEquals(self, Status.UnprocessableEntity)
+      assertEquals(self, Status.UnprocessableContent)
       assertEquals(message(selfJson), s"Cannot transfer to the same account: $alice")
   }
 
