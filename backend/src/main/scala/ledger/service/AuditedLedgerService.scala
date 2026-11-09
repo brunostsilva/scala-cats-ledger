@@ -72,6 +72,8 @@ object AuditedLedgerService:
       def streamTransactions(query: TransactionQuery): Stream[F, LedgerEntry] =
         underlying.streamTransactions(query)
 
+      def lastSeq: F[Long] = underlying.lastSeq
+
   private def rejection(operation: String, error: LedgerError): Map[String, String] =
     Map("event" -> s"$operation.rejected", "reason" -> error.code)
 

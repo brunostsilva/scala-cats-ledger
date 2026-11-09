@@ -30,7 +30,13 @@ final class TransactionStream[F[_]: Async] private (
   def defaultPageSize: PageSize = settings.defaultPageSize
 
   def respond(query: TransactionQuery): F[Response[F]] =
-    running.get.flatMap(count => if count < settings.maxConcurrentStreams then ndjson(query) else tooManyStreams)
+    service.lastSeq.flatMap { lastSeq =>
+      // An `after` past the end can't be a position this ledger ever gave out: usually a cursor from
+      // before a restart (seq starts again at 1 with this in-memory ledger). Streaming nothing and
+      // echoing it back would make the client silently skip every new entry, so it's refused.
+      if query.after > lastSeq then afterBeyondEnd(query.after, lastSeq)
+      else running.get.flatMap(count => if count < settings.maxConcurrentStreams then ndjson(query) else tooManyStreams)
+    }
 
   // One transaction per line, oldest first, then a StreamEnd line. Each page is encoded and written as
   // soon as it's read, and the next one is only read when the client keeps up (backpressure), so
@@ -52,6 +58,18 @@ final class TransactionStream[F[_]: Async] private (
     Response[F](Status.Ok)
       .withEntity(body)
       .putHeaders(`Content-Type`(TransactionStream.NdJson), `Transfer-Encoding`(TransferCoding.chunked))
+      .pure[F]
+
+  private def afterBeyondEnd(after: Long, lastSeq: Long): F[Response[F]] =
+    Response[F](Status.Conflict)
+      .withEntity(
+        JsonCodecs
+          .ErrorResponse(
+            s"after $after is beyond the end of the ledger (lastSeq $lastSeq): the ledger was reset or the " +
+              "cursor is wrong; restart from after=0"
+          )
+          .asJson
+      )
       .pure[F]
 
   private def tooManyStreams: F[Response[F]] =

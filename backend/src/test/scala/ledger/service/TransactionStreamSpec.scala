@@ -129,3 +129,12 @@ class TransactionStreamSpec extends CatsEffectSuite:
       val bobReceived = transferLegs.filter(_.transaction.accountId == fx.bob.id).map(_.transaction.amount.cents).sum
       assertEquals(bobReceived, bob.toOption.get.balance.cents)
   }
+
+  test("lastSeq is the seq of the ledger's last entry, 0 while it is empty") {
+    for
+      ref   <- Ref.of[IO, LedgerState](LedgerState.empty)
+      empty <- LedgerService.inMemory[IO](ref).lastSeq
+      fx    <- fixture(2) // a deposit and two transfers: 5 entries
+      last  <- fx.service.lastSeq
+    yield assertEquals((empty, last), (0L, 5L))
+  }

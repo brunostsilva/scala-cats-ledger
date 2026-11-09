@@ -38,6 +38,9 @@ trait LedgerService[F[_]]:
     */
   def streamTransactions(query: TransactionQuery): Stream[F, LedgerEntry]
 
+  /** The `seq` of the ledger's last entry, 0 while it is empty. */
+  def lastSeq: F[Long]
+
 object LedgerService:
 
   val LoggerName = "ledger.service"
@@ -135,8 +138,10 @@ object LedgerService:
       // The account filter is applied to each page read, so a page may emit fewer entries than it
       // read, or none. The log's length when the stream starts bounds it, so entries recorded while
       // it runs don't keep it going: a reader resumes them with `after`.
+      def lastSeq: F[Long] = ref.get.map(_.ledger.size.toLong)
+
       def streamTransactions(query: TransactionQuery): Stream[F, LedgerEntry] =
-        Stream.eval(ref.get.map(_.ledger.size.toLong)).flatMap { lastSeq =>
+        Stream.eval(lastSeq).flatMap { lastSeq =>
           Stream.unfoldChunkEval[F, Long, LedgerEntry](query.after) { after =>
             if after >= lastSeq then Sync[F].pure(Option.empty[(Chunk[LedgerEntry], Long)])
             else

@@ -73,6 +73,7 @@ class TransactionStreamRoutesSpec extends CatsEffectSuite:
         def deposit(id: AccountId, amount: Money)                   = unused
         def transfer(from: AccountId, to: AccountId, amount: Money) = unused
         def transactionsFor(id: AccountId)                          = unused
+        def lastSeq: IO[Long]                                       = IO.pure(Long.MaxValue)
         def streamTransactions(query: TransactionQuery): Stream[IO, LedgerEntry] =
           Stream.bracket(opened.update(_ + 1))(_ => closed.update(_ + 1)) >> source
       CursorStorage(service, opened, closed)
@@ -127,12 +128,25 @@ class TransactionStreamRoutesSpec extends CatsEffectSuite:
       routes   <- app(fx.service)
       ofAlice  <- routes.run(get(s"?account=${fx.alice.id.asString}&after=1&pageSize=1")).flatMap(lines(_).compile.toList)
       ofBob    <- routes.run(get(s"?account=${fx.bob.id.asString}")).flatMap(lines(_).compile.toList)
-      caughtUp <- routes.run(get("?after=10")).flatMap(lines(_).compile.toList)
+      caughtUp <- routes.run(get("?after=3")).flatMap(lines(_).compile.toList)
     yield
       assertEquals(ofAlice.map(line => seq(line).getOrElse(-1L)), List(2L, -1L))
       assertEquals(ofAlice.last, endLine(count = 1, lastSeq = 2))
       assertEquals(ofBob.init.flatMap(seq), List(3L))
-      assertEquals(caughtUp, List(endLine(count = 0, lastSeq = 10)))
+      // Polling from the end: nothing new, and the cursor stays where it was.
+      assertEquals(caughtUp, List(endLine(count = 0, lastSeq = 3)))
+  }
+
+  test("an after beyond the end of the ledger is a 409 telling the client to restart") {
+    for
+      fx       <- ledger // lastSeq 3
+      routes   <- app(fx.service)
+      response <- routes.run(get("?after=1000"))
+      body     <- response.as[String]
+    yield
+      assertEquals(response.status, Status.Conflict)
+      val message = json(body).hcursor.get[String]("message").toOption.getOrElse("")
+      assert(message.contains("lastSeq 3") && message.contains("after=0"), message)
   }
 
   test("invalid parameters are a 400, before anything is read from storage") {

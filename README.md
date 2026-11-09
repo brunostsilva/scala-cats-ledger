@@ -127,12 +127,14 @@ these loggers:
 - **Request ids.** http4s' `RequestId` middleware reuses the caller's `X-Request-ID` header or
   generates one, adds it to the access log line and returns it in the response, so a support
   ticket can quote it.
-- **Access log written when the body ends.** The line is logged once the response body has been
-  sent, so streamed responses get their real duration, and `http.response.outcome` says how the
-  body ended: `completed`, `failed` (after the status was sent, at `WARN`) or `interrupted` (the
-  connection went away, at `INFO`). A client leaving mid-stream is only noticed when the next write
-  fails with a connection error (broken pipe, connection reset), which is why connection errors
-  count as `interrupted`, not `failed`.
+- **When the access log line is written.** A body built in memory (e.g. a JSON reply) is logged as
+  soon as the route returns it, so the request is logged even if the server never gets to send it.
+  A streamed body (`GET /transactions/stream`) is logged when it ends, with its real duration, and
+  `http.response.outcome` says how it ended: `completed`, `failed` (after the status was sent, at
+  `WARN`) or `interrupted` (the connection went away, at `INFO`). A client leaving mid-stream is only
+  noticed when the next write fails with a connection error (broken pipe, connection reset), which is
+  why connection errors count as `interrupted`, not `failed`. A stream whose headers never reach the
+  client leaves no line: http4s has no hook for it.
 - **No personal data.** Owner names, balances, request bodies, headers and query strings are
   never logged. The tests assert it.
 
@@ -198,9 +200,14 @@ curl -N "localhost:8080/transactions/stream"
   response without it was cut short (e.g. a storage failure after the `200` was sent), and the
   client can resume with `after` set to the last `seq` it received. `lastSeq` is where to resume
   from after a complete stream, so a client can poll for new transactions with `after=<lastSeq>`.
-- **Errors before streaming:** invalid parameters are a `400`, an unknown account a `404`, and
-  while the limit of concurrent streams is running a `503` with `Retry-After`. They are all decided
-  before the `200`, since a stream can't change its status once it has started.
+- **Errors before streaming:** invalid parameters are a `400`, an unknown account a `404`, an
+  `after` beyond the end of the ledger a `409` (see below), and while the limit of concurrent
+  streams is running a `503` with `Retry-After`. They are all decided before the `200`, since a
+  stream can't change its status once it has started.
+- **A cursor beyond the end:** `seq` starts again at 1 when this in-memory ledger restarts, so an
+  `after` saved before a restart can point past the end. Streaming nothing and echoing it back would
+  make the client silently skip every new transaction, so it's a `409` telling the client to restart
+  from `after=0`. An `after` equal to the last `seq` is the normal "nothing new yet" poll.
 - **Concurrent stream limit:** only streams that actually started count: the count goes up when the
   response body starts and down when it ends. Reserving a slot before the `200` would leak it
   whenever the body never starts (e.g. the server fails to write the headers to a client that
