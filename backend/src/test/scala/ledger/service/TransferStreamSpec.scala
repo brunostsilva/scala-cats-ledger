@@ -73,3 +73,33 @@ class TransferStreamSpec extends CatsEffectSuite:
       result <- fx.service.streamTransfers(pageSize = 0).compile.drain.attempt
     yield assert(result.left.exists(_.isInstanceOf[IllegalArgumentException]), result)
   }
+
+  test("rejected transfers never reach the log") {
+    for
+      fx       <- fixture(0) // Alice has 100.00, Bob nothing
+      unknown  <- AccountId.random[IO]
+      results  <- List(
+                    fx.service.transfer(fx.bob.id, fx.alice.id, cents(100)),  // insufficient funds
+                    fx.service.transfer(fx.alice.id, unknown, cents(100)),    // unknown account
+                    fx.service.transfer(fx.alice.id, fx.alice.id, cents(100)) // same account
+                  ).sequence
+      streamed <- fx.service.streamTransfers(pageSize = 10).compile.toList
+    yield
+      assert(results.forall(_.isLeft), results)
+      assertEquals(streamed, Nil)
+  }
+
+  test("concurrent transfers appear exactly once each, and only the ones that succeeded") {
+    for
+      fx       <- fixture(0) // Alice has 100.00: only 10 of the 50 transfers of 10.00 can succeed
+      results  <- List.fill(50)(fx.service.transfer(fx.alice.id, fx.bob.id, cents(1000))).parSequence
+      streamed <- fx.service.streamTransfers(pageSize = 7).compile.toList
+      bob      <- fx.service.getAccount(fx.bob.id)
+    yield
+      val succeeded = results.count(_.isRight)
+      assertEquals(succeeded, 10)
+      assertEquals(streamed.size, succeeded)
+      assertEquals(streamed.map(_.id).distinct.size, succeeded)
+      // What the stream says moved is exactly what Bob received.
+      assertEquals(streamed.map(_.amount.cents).sum, bob.toOption.get.balance.cents)
+  }
