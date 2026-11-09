@@ -124,6 +124,10 @@ these loggers:
 - **Request ids.** http4s' `RequestId` middleware reuses the caller's `X-Request-ID` header or
   generates one, adds it to the access log line and returns it in the response, so a support
   ticket can quote it.
+- **Access log written when the body ends.** The line is logged once the response body has been
+  sent, so streamed responses get their real duration, and `http.response.outcome` says how the
+  body ended: `completed`, `failed` (after the status was sent, at `WARN`) or `interrupted`
+  (usually the client going away).
 - **No personal data.** Owner names, balances, request bodies, headers and query strings are
   never logged. The tests assert it.
 

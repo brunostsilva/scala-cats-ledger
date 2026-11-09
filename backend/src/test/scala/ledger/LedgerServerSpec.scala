@@ -1,5 +1,6 @@
 package ledger
 
+import scala.concurrent.duration.*
 import cats.effect.{IO, Resource}
 import com.comcast.ip4s.*
 import io.circe.Json
@@ -42,6 +43,17 @@ class LedgerServerSpec extends CatsEffectSuite:
 
   private def header(reply: Reply, name: CIString): Option[String] = reply.headers.get(name).map(_.head.value)
 
+  /** The server writes an access log line once it has sent the whole response body, which can be
+    * just after the client has read it, so wait (up to 5 s) until `count` access lines are recorded.
+    */
+  private def loggedWithAccessLines(app: Running, count: Int): IO[Vector[StructuredTestingLogger.LogMessage]] =
+    def loop: IO[Vector[StructuredTestingLogger.LogMessage]] =
+      app.logger.logged.flatMap { logged =>
+        if logged.count(_.ctx.contains("http.request.id")) >= count then IO.pure(logged)
+        else IO.sleep(20.millis) >> loop
+      }
+    loop.timeout(5.seconds)
+
   test("a deposit and a transfer go through routes, service and audit over real HTTP") {
     running.use { app =>
       for
@@ -75,7 +87,7 @@ class LedgerServerSpec extends CatsEffectSuite:
     running.use { app =>
       for
         reply  <- post(app, app.base / "accounts", Json.obj("owner" -> Json.fromString("Carol")))
-        logged <- app.logger.logged
+        logged <- loggedWithAccessLines(app, count = 1)
       yield
         val requestId = header(reply, ci"X-Request-ID")
         assertEquals(reply.status, Status.Created)
@@ -84,6 +96,7 @@ class LedgerServerSpec extends CatsEffectSuite:
         val access = logged.filter(_.ctx.contains("http.request.id"))
         assertEquals(access.flatMap(_.ctx.get("http.request.id")), requestId.toVector)
         assertEquals(access.flatMap(_.ctx.get("http.response.status_code")), Vector("201"))
+        assertEquals(access.flatMap(_.ctx.get("http.response.outcome")), Vector("completed"))
     }
   }
 
