@@ -141,3 +141,17 @@ class AccessLogSpec extends CatsEffectSuite:
         assert(context.get("duration_ms").exists(_.toLong >= 150), context)
       case other => fail(s"expected one INFO line, got $other")
   }
+
+  test("a body ended by a connection error (the client went away) is logged as interrupted at INFO") {
+    val logger = StructuredTestingLogger.impl[IO]()
+    val app    = streaming(logger, oneLine ++ Stream.raiseError[IO](new java.io.IOException("Broken pipe")))
+    for
+      response <- app.run(Request[IO](Method.GET, uri"/transactions/stream"))
+      _        <- response.body.compile.drain.attempt
+      logged   <- logger.logged
+    yield logged match
+      case Vector(INFO(message, None, context)) =>
+        assertEquals(context.get("http.response.outcome"), Some("interrupted"))
+        assert(message.endsWith("(connection closed: Broken pipe)"), message)
+      case other => fail(s"expected one INFO line, got $other")
+  }
