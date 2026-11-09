@@ -121,7 +121,7 @@ class LedgerServerSpec extends CatsEffectSuite:
     }
   }
 
-  test("GET /stream/transfers streams the transfers made through the API as chunked NDJSON") {
+  test("GET /transactions/stream streams the ledger built through the API as chunked NDJSON") {
     running.use { app =>
       for
         alice <- createAccount(app, "Alice")
@@ -137,18 +137,19 @@ class LedgerServerSpec extends CatsEffectSuite:
                    )
                  )
         reply <- app.client
-                   .run(Request[IO](Method.GET, app.base / "stream" / "transfers"))
+                   .run(Request[IO](Method.GET, app.base / "transactions" / "stream"))
                    .use(response => response.bodyText.compile.string.map(body => (response.status, response.headers, body)))
       yield
         val (status, headers, body) = reply
         assertEquals(status, Status.Ok)
         assertEquals(headers.get(ci"Content-Type").map(_.head.value), Some("application/x-ndjson"))
         assert(headers.get(ci"Transfer-Encoding").exists(_.head.value.contains("chunked")), headers)
-        val lines = body.linesIterator.filter(_.nonEmpty).toList
-        assertEquals(lines.size, 1, body)
-        val transfer = io.circe.jawn.parse(lines.head).toOption.get.hcursor
-        assertEquals(transfer.get[String]("from").toOption, Some(alice))
-        assertEquals(transfer.get[String]("to").toOption, Some(bob))
-        assertEquals(transfer.get[BigDecimal]("amount").toOption, Some(BigDecimal("3.00")))
+        val lines = body.linesIterator.filter(_.nonEmpty).toList.map(line => io.circe.jawn.parse(line).toOption.get.hcursor)
+        // The deposit, Alice's leg and Bob's leg of the transfer, then the StreamEnd line.
+        assertEquals(lines.init.map(_.get[Long]("seq").toOption), List(Some(1L), Some(2L), Some(3L)))
+        assertEquals(lines.init.map(_.get[String]("accountId").toOption), List(Some(alice), Some(alice), Some(bob)))
+        assertEquals(lines(2).get[BigDecimal]("amount").toOption, Some(BigDecimal("3.00")))
+        assertEquals(lines.last.get[Long]("lastSeq").toOption, Some(3L))
+        assertEquals(lines.last.get[Boolean]("end").toOption, Some(true))
     }
   }

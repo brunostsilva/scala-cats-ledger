@@ -69,8 +69,8 @@ object AuditedLedgerService:
       def transactionsFor(id: AccountId): F[Either[LedgerError, List[Transaction]]] =
         underlying.transactionsFor(id)
 
-      def streamTransfers(pageSize: Int): Stream[F, Transfer] =
-        underlying.streamTransfers(pageSize)
+      def streamTransactions(query: TransactionQuery): Stream[F, LedgerEntry] =
+        underlying.streamTransactions(query)
 
   private def rejection(operation: String, error: LedgerError): Map[String, String] =
     Map("event" -> s"$operation.rejected", "reason" -> error.code)

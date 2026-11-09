@@ -8,7 +8,7 @@ import org.http4s.implicits.*
 import org.http4s.server.Server
 import org.http4s.server.middleware.{CORS, RequestId}
 import org.typelevel.log4cats.LoggerFactory
-import ledger.http.{AccessLog, LedgerRoutes}
+import ledger.http.{AccessLog, LedgerRoutes, TransactionStreamSettings}
 import ledger.service.{AuditedLedgerService, LedgerService, LedgerState}
 
 /** The whole application as a `Resource`: state, audited service, middleware and the Ember server.
@@ -16,27 +16,35 @@ import ledger.service.{AuditedLedgerService, LedgerService, LedgerState}
   */
 object LedgerServer:
 
-  def resource(host: Host, port: Port)(using LoggerFactory[IO]): Resource[IO, Server] =
+  def resource(
+      host: Host,
+      port: Port,
+      streamSettings: TransactionStreamSettings = TransactionStreamSettings.Default
+  )(using LoggerFactory[IO]): Resource[IO, Server] =
     for
-      ref    <- Resource.eval(Ref.of[IO, LedgerState](LedgerState.empty))
-      server <- EmberServerBuilder
-                  .default[IO]
-                  .withHost(host)
-                  .withPort(port)
-                  .withHttpApp(httpApp(ref))
-                  .withLogger(LoggerFactory[IO].getLoggerFromName("ledger.server"))
-                  .build
+      ref     <- Resource.eval(Ref.of[IO, LedgerState](LedgerState.empty))
+      httpApp <- Resource.eval(app(ref, streamSettings))
+      server  <- EmberServerBuilder
+                   .default[IO]
+                   .withHost(host)
+                   .withPort(port)
+                   .withHttpApp(httpApp)
+                   .withLogger(LoggerFactory[IO].getLoggerFromName("ledger.server"))
+                   .build
     yield server
 
-  private def httpApp(ref: Ref[IO, LedgerState])(using LoggerFactory[IO]): HttpApp[IO] =
+  private def app(ref: Ref[IO, LedgerState], streamSettings: TransactionStreamSettings)(using
+      LoggerFactory[IO]
+  ): IO[HttpApp[IO]] =
     val service = AuditedLedgerService(
       LedgerService.inMemory[IO](ref),
       LoggerFactory[IO].getLoggerFromName(AuditedLedgerService.LoggerName)
     )
-    val routes = new LedgerRoutes[IO](service).routes
-    // Request id outermost, so the access log line and the response both carry it.
-    RequestId.httpApp(
-      AccessLog(LoggerFactory[IO].getLoggerFromName(AccessLog.LoggerName))(
-        CORS.policy.withAllowOriginAll(routes).orNotFound
+    LedgerRoutes.make[IO](service, streamSettings).map { ledgerRoutes =>
+      // Request id outermost, so the access log line and the response both carry it.
+      RequestId.httpApp(
+        AccessLog(LoggerFactory[IO].getLoggerFromName(AccessLog.LoggerName))(
+          CORS.policy.withAllowOriginAll(ledgerRoutes.routes).orNotFound
+        )
       )
-    )
+    }

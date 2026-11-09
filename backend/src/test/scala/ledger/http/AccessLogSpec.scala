@@ -30,8 +30,10 @@ class AccessLogSpec extends CatsEffectSuite:
 
   /** The same middleware stack as `Main`: request id outside, access log inside, real routes. */
   private def withRoutes(logger: StructuredTestingLogger[IO]): IO[HttpApp[IO]] =
-    Ref.of[IO, LedgerState](LedgerState.empty).map { ref =>
-      RequestId.httpApp(AccessLog(logger)(new LedgerRoutes[IO](LedgerService.inMemory[IO](ref)).routes.orNotFound))
+    Ref.of[IO, LedgerState](LedgerState.empty).flatMap { ref =>
+      LedgerRoutes.make[IO](LedgerService.inMemory[IO](ref)).map { ledgerRoutes =>
+        RequestId.httpApp(AccessLog(logger)(ledgerRoutes.routes.orNotFound))
+      }
     }
 
   test("logs method, path, status, duration and the generated request id") {
@@ -111,7 +113,7 @@ class AccessLogSpec extends CatsEffectSuite:
     val logger = StructuredTestingLogger.impl[IO]()
     val app    = streaming(logger, oneLine ++ Stream.raiseError[IO](new RuntimeException("storage failed")))
     for
-      response <- app.run(Request[IO](Method.GET, uri"/stream/transfers"))
+      response <- app.run(Request[IO](Method.GET, uri"/transactions/stream"))
       before   <- logger.logged
       drained  <- response.body.compile.drain.attempt
       logged   <- logger.logged
@@ -130,7 +132,7 @@ class AccessLogSpec extends CatsEffectSuite:
     val logger = StructuredTestingLogger.impl[IO]()
     val app    = streaming(logger, oneLine ++ Stream.sleep_[IO](150.millis) ++ oneLine)
     for
-      _      <- send(app, Request[IO](Method.GET, uri"/stream/transfers"))
+      _      <- send(app, Request[IO](Method.GET, uri"/transactions/stream"))
       logged <- logger.logged
     yield logged match
       case Vector(INFO(_, None, context)) =>

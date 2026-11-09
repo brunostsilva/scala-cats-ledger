@@ -19,8 +19,8 @@ class LedgerRoutesSpec extends CatsEffectSuite:
   private val unknownId = "00000000-0000-4000-8000-000000000000"
 
   private def newApp: IO[HttpApp[IO]] =
-    Ref.of[IO, LedgerState](LedgerState.empty).map { ref =>
-      new LedgerRoutes[IO](LedgerService.inMemory[IO](ref)).routes.orNotFound
+    Ref.of[IO, LedgerState](LedgerState.empty).flatMap { ref =>
+      LedgerRoutes.make[IO](LedgerService.inMemory[IO](ref)).map(_.routes.orNotFound)
     }
 
   private def call(app: HttpApp[IO], method: Method, path: String, body: Option[Json] = None): IO[(Status, Json)] =

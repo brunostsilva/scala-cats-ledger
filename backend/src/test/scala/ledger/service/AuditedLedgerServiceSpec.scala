@@ -131,7 +131,7 @@ class AuditedLedgerServiceSpec extends CatsEffectSuite:
       account <- fx.service.createAccount(owner)
       _       <- fx.service.getAccount(account.id)
       _       <- fx.service.transactionsFor(account.id)
-      _       <- fx.service.streamTransfers(pageSize = 10).compile.drain
+      _       <- fx.service.streamTransactions(TransactionQuery()).compile.drain
       logged  <- fx.logger.logged
     yield assertEquals(events(logged), Vector("account.created"))
   }

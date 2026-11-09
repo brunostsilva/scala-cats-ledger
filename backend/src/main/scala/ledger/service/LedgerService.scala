@@ -9,13 +9,17 @@ import fs2.{Chunk, Stream}
 import org.typelevel.log4cats.LoggerFactory
 import ledger.domain.*
 
-/** @param transfers append-only log of completed transfers, oldest first: the "table" that
-  *   `streamTransfers` pages through.
+/** @param transactions each account's history, newest first, for per-account reads
+  * @param ledger every transaction of every account, oldest first, as an append-only log that
+  *   `streamTransactions` pages through. It holds the same transactions as `transactions`, indexed
+  *   by position instead of by account: a deliberate denormalization, so the whole ledger can be
+  *   read in order without merging every account's history. Both are only ever changed together,
+  *   in the same atomic `Ref` update.
   */
 final case class LedgerState(
     accounts: Map[AccountId, Account],
     transactions: Map[AccountId, List[Transaction]],
-    transfers: Vector[Transfer]
+    ledger: Vector[LedgerEntry]
 )
 
 object LedgerState:
@@ -28,10 +32,11 @@ trait LedgerService[F[_]]:
   def transfer(from: AccountId, to: AccountId, amount: Money): F[Either[LedgerError, (Account, Account)]]
   def transactionsFor(id: AccountId): F[Either[LedgerError, List[Transaction]]]
 
-  /** Every completed transfer, oldest first, read from storage `pageSize` at a time: the whole log
-    * is never held in memory at once, and the next page is only read when the consumer asks for it.
+  /** The ledger's entries matching `query`, oldest first, read from storage a page at a time: the
+    * whole ledger is never held in memory at once, and the next page is only read when the consumer
+    * asks for it.
     */
-  def streamTransfers(pageSize: Int): Stream[F, Transfer]
+  def streamTransactions(query: TransactionQuery): Stream[F, LedgerEntry]
 
 object LedgerService:
 
@@ -71,7 +76,8 @@ object LedgerService:
                               val tx = Transaction(txId, id, None, TransactionType.Deposit, amount, updated.balance, now)
                               val newState = state.copy(
                                 accounts = state.accounts.updated(id, updated),
-                                transactions = state.transactions.updatedWith(id)(txs => Some(tx :: txs.getOrElse(Nil)))
+                                transactions = state.transactions.updatedWith(id)(txs => Some(tx :: txs.getOrElse(Nil))),
+                                ledger = state.ledger :+ LedgerEntry(state.ledger.size + 1L, tx)
                               )
                               (newState, Right(updated))
                     }
@@ -106,7 +112,10 @@ object LedgerService:
                             transactions = state.transactions
                               .updatedWith(from)(txs => Some(txOut :: txs.getOrElse(Nil)))
                               .updatedWith(to)(txs => Some(txIn :: txs.getOrElse(Nil))),
-                            transfers = state.transfers :+ Transfer(txId, from, to, amount, now)
+                            ledger = state.ledger ++ Vector(
+                              LedgerEntry(state.ledger.size + 1L, txOut),
+                              LedgerEntry(state.ledger.size + 2L, txIn)
+                            )
                           )
                           (newState, Right((updatedFrom, updatedTo)))
                     })
@@ -118,21 +127,23 @@ object LedgerService:
           else Left(LedgerError.AccountNotFound(id))
         }
 
-      // Keyset-style pagination over the append-only log, the in-memory counterpart of a database
-      // cursor (with Doobie this would be `query.stream` with a fetch size). Each page is a fresh read
-      // of `pageSize` entries, emitted as one chunk; the next one is only read on demand (backpressure).
-      // The log's length when the stream starts bounds it, so transfers made while it runs don't
-      // keep it going forever.
-      def streamTransfers(pageSize: Int): Stream[F, Transfer] =
-        if pageSize <= 0 then Stream.raiseError[F](new IllegalArgumentException(s"pageSize must be positive: $pageSize"))
-        else
-          Stream.eval(ref.get.map(_.transfers.size)).flatMap { end =>
-            Stream.unfoldChunkEval[F, Int, Transfer](0) { offset =>
-              if offset >= end then Sync[F].pure(Option.empty[(Chunk[Transfer], Int)])
-              else
-                ref.get.map { state =>
-                  val page = state.transfers.slice(offset, math.min(offset + pageSize, end))
-                  Option((Chunk.from(page), offset + page.size))
-                }
-            }
+      // Keyset pagination by seq, the in-memory form of
+      //   SELECT ... WHERE seq > :after [AND account_id = :account] ORDER BY seq LIMIT :pageSize
+      // run once per page: seq n is entry n - 1 of the append-only log, so a page is a slice. Each page
+      // is read only when the consumer pulls the previous one (backpressure). With a database, the
+      // same Stream would come from that query through a cursor (e.g. Doobie's `query.stream`).
+      // The account filter is applied to each page read, so a page may emit fewer entries than it
+      // read, or none. The log's length when the stream starts bounds it, so entries recorded while
+      // it runs don't keep it going: a reader resumes them with `after`.
+      def streamTransactions(query: TransactionQuery): Stream[F, LedgerEntry] =
+        Stream.eval(ref.get.map(_.ledger.size.toLong)).flatMap { lastSeq =>
+          Stream.unfoldChunkEval[F, Long, LedgerEntry](query.after) { after =>
+            if after >= lastSeq then Sync[F].pure(Option.empty[(Chunk[LedgerEntry], Long)])
+            else
+              ref.get.map { state =>
+                val page     = state.ledger.slice(after.toInt, math.min(after + query.pageSize.value, lastSeq).toInt)
+                val matching = query.account.fold(page)(id => page.filter(_.transaction.accountId == id))
+                Option((Chunk.from(matching), after + page.size))
+              }
           }
+        }

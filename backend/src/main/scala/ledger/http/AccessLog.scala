@@ -12,7 +12,7 @@ import org.typelevel.log4cats.StructuredLogger
   * body ended.
   *
   * The line is written when the response body ends, not when the route returns the response, so a
-  * streamed response (e.g. `GET /stream/transfers`) is logged with its real duration and with its
+  * streamed response (e.g. `GET /transactions/stream`) is logged with its real duration and with its
   * outcome: `completed`, `failed` (the body failed after the status was sent, logged at WARN) or
   * `interrupted` (usually the client going away).
   *
