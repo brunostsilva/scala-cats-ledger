@@ -81,10 +81,13 @@ The backend suite (munit + munit-cats-effect) covers:
   (log4cats → SLF4J → Logback with `logback.xml`), so its log lines are printed in the `sbt test`
   output, in CI too, and checks what Logback received: every layer, structured fields in the MDC,
   no owner names. The other tests record log lines in memory instead.
-- **Transfer streaming:** paging, order and snapshot bound of `streamTransfers`
-  (`TransferStreamSpec`); the NDJSON output and headers, an endless ledger read lazily, a failure
-  mid-stream, and a client disconnecting over a real socket, with the storage cursor released in
-  every case (`TransferStreamRoutesSpec`); and the endpoint on the full app (`LedgerServerSpec`).
+- **Ledger streaming:** ledger order and consecutive `seq`, paging, the account filter, `after`,
+  the snapshot bound, rejected operations staying out of the ledger and concurrent transfers
+  recorded exactly once (`TransactionStreamSpec`); the NDJSON output, `StreamEnd` line, parameter
+  validation (400/404 before any streaming), the stream limit (503), an endless ledger read lazily,
+  a failure mid-stream and a client disconnecting over a real socket, with the storage cursor
+  released in every case (`TransactionStreamRoutesSpec`); `PageSize`, the stream settings, and the
+  endpoint on the full app (`LedgerServerSpec`).
 - **Service:** deposits, transfers, transaction history, and **concurrency**: parallel deposits are
   all applied, and parallel transfers never overdraw an account, since every mutation is an atomic
   `Ref` update.
@@ -166,32 +169,51 @@ logger never fails a committed change, since turning it into a 500 would invite 
 | POST   | `/accounts/{id}/deposit`        | `{ "amount": number }`                 | Deposit into an account            |
 | POST   | `/transfers`                    | `{ "from", "to", "amount": number }`   | Transfer between two accounts      |
 | GET    | `/accounts/{id}/transactions`   | —                                       | List an account's transaction log  |
-| GET    | `/stream/transfers`             | —                                       | Stream every transfer as NDJSON    |
+| GET    | `/transactions/stream`          | —                                       | Stream the ledger as NDJSON        |
 
-### Streaming transfers
+### Streaming the ledger
 
-`GET /stream/transfers` returns every completed transfer, oldest first, as
-[NDJSON](https://github.com/ndjson/ndjson-spec): one JSON object per line, with
-`Content-Type: application/x-ndjson` and `Transfer-Encoding: chunked`.
+`GET /transactions/stream` returns the ledger as [NDJSON](https://github.com/ndjson/ndjson-spec),
+oldest first: every transaction of every account (deposits and both legs of each transfer), one
+JSON object per line, in the same shape as `GET /accounts/{id}/transactions` plus its position in
+the ledger, `seq`. A last line marks the end of the stream:
 
 ```bash
-curl -N localhost:8080/stream/transfers
-{"id":"0c7e…","from":"6f1c…","to":"9a2e…","amount":2.00,"occurredAt":"2026-11-09T14:02:11.481Z"}
-{"id":"5b0d…","from":"9a2e…","to":"6f1c…","amount":1.00,"occurredAt":"2026-11-09T14:02:12.107Z"}
+curl -N "localhost:8080/transactions/stream"
+{"seq":1,"id":"5b0d…","accountId":"6f1c…","counterpartyId":null,"txType":"Deposit","amount":100.00,"balanceAfter":100.00,"occurredAt":"2026-11-09T14:02:11.481Z"}
+{"seq":2,"id":"0c7e…","accountId":"6f1c…","counterpartyId":"9a2e…","txType":"Transfer","amount":2.50,"balanceAfter":97.50,"occurredAt":"2026-11-09T14:02:12.107Z"}
+{"seq":3,"id":"0c7e…","accountId":"9a2e…","counterpartyId":"6f1c…","txType":"Transfer","amount":2.50,"balanceAfter":2.50,"occurredAt":"2026-11-09T14:02:12.107Z"}
+{"end":true,"count":3,"lastSeq":3}
 ```
 
-- **Memory:** the ledger is never collected into a list. `LedgerService.streamTransfers` reads
-  storage in pages of 500 (`Stream.unfoldChunkEval` over the append-only transfer log), and each page
-  is encoded and written before the next one is read. The storage is in memory in this project; with
-  a database the same `Stream[F, Transfer]` would come from a cursor (e.g. Doobie's `query.stream`).
+| Query parameter | Default | Description |
+|---|---|---|
+| `account` | all accounts | Only this account's transactions: its history, oldest first |
+| `after` | `0` | Only transactions with a greater `seq`, to resume a stream |
+| `pageSize` | `500` | Transactions read from storage at a time, 1 to 1000 |
+
+- **Complete or cut short:** the `{"end":true,…}` line is only written when the stream completes. A
+  response without it was cut short (e.g. a storage failure after the `200` was sent), and the
+  client can resume with `after` set to the last `seq` it received. `lastSeq` is where to resume
+  from after a complete stream, so a client can poll for new transactions with `after=<lastSeq>`.
+- **Errors before streaming:** invalid parameters are a `400`, an unknown account a `404`, and
+  beyond the concurrent stream limit a `503` with `Retry-After`. They are all decided before the
+  `200`, since a stream can't change its status once it has started.
+- **Memory:** the ledger is never collected into a list. `LedgerService.streamTransactions` reads
+  storage one page at a time (keyset pagination by `seq` over the append-only log) and each page is
+  encoded and written before the next one is read. The storage is in memory in this project; with
+  a database the same `Stream` would come from a cursor over
+  `WHERE seq > :after ORDER BY seq LIMIT :pageSize` (e.g. Doobie's `query.stream`).
 - **Backpressure:** fs2 only reads the next page when the client has taken the previous one, so a
   slow client slows the reads down instead of piling data up on the server.
-- **Consistency:** the stream covers the transfers that existed when it started; transfers made
-  while it runs appear in the next request.
+- **Consistency:** a stream covers the transactions that existed when it started; later ones are
+  picked up by the next request with `after`.
 - **Resource safety:** if the client disconnects or the stream fails, http4s interrupts the body
-  stream and its finalizers run, so a storage cursor acquired with `Stream.bracket`/`Stream.resource`
-  is always released. A failure after the first lines can only cut the response short, since the
-  `200` was already sent.
+  stream and its finalizers run, so the stream's slot and any storage cursor acquired with
+  `Stream.bracket`/`Stream.resource` are released.
+- **Configuration:** `TRANSACTION_STREAM_PAGE_SIZE` (default page size, 1 to 1000, default `500`) and
+  `TRANSACTION_STREAM_MAX_CONCURRENT` (streams served at once, default `8`). Invalid values stop
+  the app at startup with a message.
 
 ## Tech stack
 
