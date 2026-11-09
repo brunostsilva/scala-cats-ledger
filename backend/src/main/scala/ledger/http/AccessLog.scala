@@ -13,13 +13,14 @@ import org.typelevel.log4cats.StructuredLogger
   * body ended.
   *
   * When the line is written depends on the body:
-  *   - a body built in memory (its length is known up front, e.g. a JSON reply) is logged as soon as
-  *     the route returns the response, so the request is logged even if the server never gets to send
-  *     it (e.g. the client left before the headers were written);
-  *   - a streamed body (e.g. `GET /transactions/stream`) is logged when it ends, with its real
-  *     duration and outcome: `completed`, `failed` (the body failed after the status was sent, logged
-  *     at WARN) or `interrupted` (the connection went away, logged at INFO). If the server never starts
-  *     sending it, http4s offers no hook to log it from: a known gap, limited to streamed responses.
+  *   - a body built in memory (sent with a known length, e.g. a JSON reply) is logged as soon as the
+  *     route returns the response, so the request is logged even if the server never gets to send it
+  *     (e.g. the client left before the headers were written);
+  *   - a streamed body (sent chunked, e.g. `GET /transactions/stream`) is logged when it ends, with
+  *     its real duration and outcome: `completed`, `failed` (the body failed after the status was
+  *     sent, logged at WARN) or `interrupted` (the connection went away, logged at INFO). If the server
+  *     never starts sending it, http4s offers no hook to log it from: a known gap, limited to streamed
+  *     responses.
   *
   * Meant to run inside http4s's `RequestId` middleware, which takes the id from the `X-Request-ID`
   * header (or generates one) and returns it to the client, so a user or another service can quote it.
@@ -40,7 +41,7 @@ object AccessLog:
           // An exception escaping the app is turned into a 500 by the server, so it is logged as one.
           case Left(error) =>
             logNow(500, Outcome.Failed(error)) *> error.raiseError[F, Response[F]]
-          case Right(response) if response.entity.length.isDefined =>
+          case Right(response) if !response.isChunked =>
             logNow(response.status.code, Outcome.Completed).as(response)
           case Right(response) =>
             val logged = response.body.onFinalizeCase(exit => logNow(response.status.code, Outcome.ofBody(exit)))
