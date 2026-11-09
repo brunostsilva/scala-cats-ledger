@@ -14,7 +14,6 @@ lazy val root = (project in file("."))
       "org.http4s"     %% "http4s-dsl"          % http4sVersion,
       "org.http4s"     %% "http4s-circe"        % http4sVersion,
       "io.circe"       %% "circe-core"          % circeVersion,
-      // Used directly (transfer streaming); pinned to the version http4s 0.23.38 is built against.
       "co.fs2"         %% "fs2-core"            % "3.14.0",
       // Logging as effects (log4cats) over SLF4J, with Logback as the backend.
       "org.typelevel"  %% "log4cats-slf4j"      % log4catsVersion,
