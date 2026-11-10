@@ -25,6 +25,31 @@ updates:
       prefix: build
       include: scope
 
+  # Backend (Scala 3 + sbt): build.sbt and project/plugins.sbt. Dependabot supports sbt version
+  # updates since May 2026 (security updates aren't available for sbt yet).
+  - package-ecosystem: sbt
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # fs2-core is declared directly but pinned to the version http4s is built against, so the
+      # two must move together.
+      http4s-fs2:
+        patterns: ["org.http4s:*", "co.fs2:*"]
+      # Cats Effect, log4cats and munit-cats-effect follow the same Typelevel release train.
+      typelevel:
+        patterns: ["org.typelevel:*"]
+      circe:
+        patterns: ["io.circe:*"]
+      # Everything else (Logback, munit, sbt plugins): minor/patch bumps in one weekly PR.
+      sbt-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+      include: scope
+
   # Actions used by .github/workflows (checkout, setup-java, setup-sbt, setup-node).
   - package-ecosystem: github-actions
     directory: /
@@ -37,6 +62,3 @@ updates:
     commit-message:
       prefix: ci
       include: scope
-
-# The sbt backend is not covered: Dependabot's sbt ecosystem is still under development in
-# dependabot-core. Scala Steward is the usual tool for keeping build.sbt up to date.
