@@ -112,6 +112,12 @@ export async function streamLedger({ account, after = 0, pageSize, signal, onEnt
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error
     }
+  } catch (error) {
+    // Whatever stopped the reading (a malformed line, a failing callback...), the rest of the body
+    // mustn't keep streaming into a reader nobody drains: the connection would stay open and hold one
+    // of the server's concurrent stream slots until the server finished on its own.
+    cancel()
+    throw error
   } finally {
     signal?.removeEventListener('abort', cancel)
   }

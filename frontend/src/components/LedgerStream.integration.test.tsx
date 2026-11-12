@@ -163,6 +163,23 @@ describe('LedgerStream against a streaming backend', () => {
     expect(startButton()).toBeEnabled()
   })
 
+  it('fails on a malformed line and closes the connection, so it stops holding a server slot', async () => {
+    server.entries = ledger(300)
+    server.linesPerChunk = 1
+    server.chunkDelayMs = 20
+    server.faults = [{ kind: 'corrupt', afterEntries: 3 }]
+    renderStream()
+
+    await userEvent.click(startButton())
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    // At most the 3 entries before the bad line (TCP may deliver the last of them with it).
+    expect(status()).toHaveTextContent(/^Failed after [0-3] transactions?$/)
+    // The server was still streaming the other 297: the client closed the connection.
+    await vi.waitFor(() => expect(server.abandoned).toBe(1))
+    expect(server.requests).toHaveLength(1)
+  })
+
   it("shows the server's message when the stream is refused", async () => {
     server.entries = ledger(2)
     render(<LedgerStream accounts={[alice, bob, { id: 'acc-gone', owner: 'Gone', balance: 0 }]} options={fast} />)

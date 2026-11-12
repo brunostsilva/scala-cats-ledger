@@ -11,6 +11,8 @@ export type Fault =
   | { kind: 'cut'; afterEntries: number }
   /** A 503 with `Retry-After`, like the backend at its limit of concurrent streams. */
   | { kind: 'busy'; retryAfterSeconds: number }
+  /** After this many entries, a line that isn't JSON (e.g. a proxy's error page), then the rest. */
+  | { kind: 'corrupt'; afterEntries: number }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -85,8 +87,13 @@ export class FakeLedgerServer {
 
     let sent = 0
     let lastSent = after
+    let corrupted = false
     for (let i = 0; i < matching.length; i += this.linesPerChunk) {
       if (res.destroyed) return
+      if (fault?.kind === 'corrupt' && !corrupted && sent >= fault.afterEntries) {
+        corrupted = true
+        res.write('<html><body>502 Bad Gateway</body></html>\n')
+      }
       let chunk = matching.slice(i, i + this.linesPerChunk)
       const cutHere = fault?.kind === 'cut' && sent + chunk.length >= fault.afterEntries
       if (cutHere) chunk = chunk.slice(0, fault.afterEntries - sent)

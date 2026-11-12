@@ -103,6 +103,23 @@ describe('streamLedger', () => {
     expect(busy).toMatchObject({ status: 503, retryAfterSeconds: 1 })
   })
 
+  it('fails on a malformed line, and cancels the rest of the body', async () => {
+    // A corrupt line mid-stream (e.g. an HTML error page from a proxy), then the body stays open.
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from(line(ledgerEntry(1)) + '<html>Bad Gateway</html>\n' + line(ledgerEntry(2))))
+      },
+      cancel() {
+        cancelled = true
+      }
+    })
+    stubFetch(new Response(body, { status: 200 }))
+
+    await expect(streamLedger({ onEntries: () => undefined })).rejects.toBeInstanceOf(SyntaxError)
+    expect(cancelled).toBe(true)
+  })
+
   it('stops reading as soon as it is aborted', async () => {
     // One chunk, then the body stays open, like a slow server.
     const body = new ReadableStream<Uint8Array>({
