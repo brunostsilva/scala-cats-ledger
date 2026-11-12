@@ -105,7 +105,13 @@ export async function streamLedger({ account, after = 0, pageSize, signal, onEnt
       pending = lines.pop() ?? ''
       parse(lines)
     }
-    parse([pending + decoder.decode()])
+    // A last line without its newline is either the end line written without one, or a line the
+    // connection cut in half: the fragment is dropped, and the missing end line reports the cut.
+    try {
+      parse([pending + decoder.decode()])
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error
+    }
   } finally {
     signal?.removeEventListener('abort', cancel)
   }
