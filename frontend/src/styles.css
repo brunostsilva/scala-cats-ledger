@@ -180,3 +180,55 @@ main h2 {
   color: var(--muted);
   font-style: italic;
 }
+
+.ledger-stream {
+  margin-top: 2rem;
+}
+
+.stream-controls {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+@media (max-width: 720px) {
+  .stream-controls {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stream-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.stream-controls .checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+  padding-bottom: 0.6rem;
+}
+
+.stream-controls .checkbox input {
+  width: auto;
+  margin: 0;
+}
+
+.stream-controls button {
+  width: auto;
+  margin-top: 0;
+  padding-inline: 1.25rem;
+}
+
+.stream-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ledger-stream .transactions {
+  margin-top: 0.5rem;
+}

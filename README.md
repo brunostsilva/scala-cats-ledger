@@ -33,7 +33,8 @@ request id and one access log line.
 
 **Frontend** (`frontend/`)
 A minimal React UI to create accounts, deposit, transfer between accounts, and view transaction history
-— just enough to exercise the API end to end.
+— just enough to exercise the API end to end — plus a live view of the streamed ledger (see
+[Streaming the ledger in the UI](#streaming-the-ledger-in-the-ui)).
 
 ## Running locally
 
@@ -104,7 +105,19 @@ npm run test:watch
 
 The frontend suite covers the API client (URLs, payloads and error handling, with `fetch` stubbed),
 every component, and the `App` flows (create, deposit, transfer, select, error banner) against a
-mocked API. It needs Node 22.22+ or 24.15+.
+mocked API. It needs Node 22.22+ or 24.15+. For the ledger stream:
+
+- **`ledgerStream.test.ts`:** the NDJSON client on its own: lines split anywhere across chunks
+  (including mid-line and inside the end line), entries handed over chunk by chunk, an end line
+  without a trailing newline, the query string, a stream cut short (where to resume from), refused
+  streams with their status, message and `Retry-After`, and aborting mid-stream.
+- **`LedgerStream.integration.test.tsx`:** the component, its hook and the client together, **over
+  real HTTP**, against a fake backend (`src/test/fakeLedgerServer.ts`, a Node HTTP server
+  implementing the documented contract) that writes NDJSON in small chunks: the whole ledger and
+  one account's history; a connection dropped mid-stream, resumed from the last `seq` with nothing
+  lost or duplicated; a `503` waited out with `Retry-After`; following new transactions; a `409`
+  after the ledger was reset, streamed again from the start; stopping, which closes the connection;
+  a refused stream's message; and a 1,200-entry ledger with only the latest rows kept.
 
 ## Logging
 
@@ -229,7 +242,31 @@ curl -N "localhost:8080/transactions/stream"
   `TRANSACTION_STREAM_MAX_CONCURRENT` (streams running at once, default `8`). Invalid values stop
   the app at startup with a message.
 
+### Streaming the ledger in the UI
+
+The **Ledger stream** panel streams the whole ledger, or one account's history, and can keep
+following new transactions:
+
+- **Incremental reading** (`src/ledgerStream.ts`): the response body is read with a
+  `ReadableStream` reader and decoded as it arrives; only complete lines are parsed, and each
+  chunk's entries are rendered right away instead of waiting for the whole response.
+- **The contract, client side** (`src/useLedgerStream.ts`):
+  - a response without its end line, or a connection that breaks, is resumed with `after` set to
+    the last `seq` received, so nothing is lost or shown twice (up to 3 times in a row);
+  - a `503` is retried after `Retry-After`;
+  - a `409` (the cursor is beyond the end because the in-memory ledger restarted) streams the
+    ledger again from `after=0`;
+  - **Follow** polls with `after=<lastSeq>` every 2 seconds once the stream is complete, so only new
+    transactions travel.
+- **Bounded memory:** the panel keeps the latest 500 rows and counts the rest, so a ledger of any
+  size can be streamed in the browser.
+- **Cancellation:** **Stop**, starting again or leaving the page aborts the request and cancels the
+  body, which closes the connection, so the backend's stream ends and stops counting against its
+  limit.
+- **Accessibility:** the progress is a polite live region (`role="status"`) and a failure an
+  `alert`.
+
 ## Tech stack
 
 Scala 3.10 · JDK 25 · Cats Effect 3 · fs2 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
-Vitest · Testing Library
+Vitest · Testing Library · Streams API (NDJSON)

@@ -4,6 +4,7 @@ import { CreateAccount } from './components/CreateAccount'
 import { AccountCard } from './components/AccountCard'
 import { ActionsPanel } from './components/ActionsPanel'
 import { TransactionList } from './components/TransactionList'
+import { LedgerStream } from './components/LedgerStream'
 
 export default function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -82,6 +83,7 @@ export default function App() {
           <ActionsPanel accounts={accounts} onDeposit={handleDeposit} onTransfer={handleTransfer} />
           <h2>Transaction history</h2>
           <TransactionList transactions={transactions} />
+          <LedgerStream accounts={accounts} />
         </main>
       </div>
     </div>
