@@ -62,7 +62,7 @@ export class FakeLedgerServer {
     const after = Number(url.searchParams.get('after') ?? '0')
     this.requests.push({ account, after })
 
-    const lastSeq = this.entries.at(-1)?.seq ?? 0
+    const lastSeq = this.entries[this.entries.length - 1]?.seq ?? 0
     const known = (id: string) => this.accounts.has(id) || this.entries.some((e) => e.accountId === id)
     if (account && !known(account)) return this.json(res, 404, { message: `Account ${account} not found` })
     if (after > lastSeq) {
@@ -92,7 +92,7 @@ export class FakeLedgerServer {
       if (cutHere) chunk = chunk.slice(0, fault.afterEntries - sent)
       res.write(chunk.map((e) => JSON.stringify(e) + '\n').join(''))
       sent += chunk.length
-      lastSent = chunk.at(-1)?.seq ?? lastSent
+      lastSent = chunk[chunk.length - 1]?.seq ?? lastSent
       if (cutHere) {
         await delay(this.chunkDelayMs)
         res.destroy() // no end line, connection gone
