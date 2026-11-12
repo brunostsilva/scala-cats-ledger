@@ -94,6 +94,17 @@ describe('App', () => {
     expect(mockedApi.transactions).toHaveBeenCalledWith(alice.id)
   })
 
+  it('offers the ledger stream, filterable by the accounts created', async () => {
+    render(<App />)
+    await createAccount(alice)
+    await createAccount(bob)
+
+    const stream = screen.getByRole('region', { name: 'Ledger stream' })
+    const filter = within(stream).getByRole('combobox', { name: 'Stream account' })
+    expect(within(filter).getAllByRole('option').map((o) => o.textContent)).toEqual(['All accounts', 'Alice', 'Bob'])
+    expect(within(stream).getByRole('button', { name: 'Stream ledger' })).toBeEnabled()
+  })
+
   it('shows the API error message and clears it after the next success', async () => {
     render(<App />)
     mockedApi.createAccount.mockRejectedValueOnce(new Error('Owner already exists'))
