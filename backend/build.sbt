@@ -1,4 +1,4 @@
-ThisBuild / scalaVersion := "3.10.0"
+ThisBuild / scalaVersion := "3.10.1"
 ThisBuild / version := "0.1.0"
 
 val http4sVersion   = "0.23.38"

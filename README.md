@@ -40,7 +40,7 @@ A minimal React UI to create accounts, deposit, transfer between accounts, and v
 
 ### Backend
 
-Requires **JDK 25** (Temurin recommended) and sbt; the build uses Scala 3.10.
+Requires **JDK 27** (Temurin recommended) and sbt; the build uses Scala 3.10.
 
 ```bash
 cd backend
@@ -105,7 +105,7 @@ npm run test:watch
 
 The frontend suite covers the API client (URLs, payloads and error handling, with `fetch` stubbed),
 every component, and the `App` flows (create, deposit, transfer, select, error banner) against a
-mocked API. It needs Node 22.22+ or 24.15+. For the ledger stream:
+mocked API. It needs Node 26+. For the ledger stream:
 
 - **`ledgerStream.test.ts`:** the NDJSON client on its own: lines split anywhere across chunks
   (including mid-line and inside the end line), entries handed over chunk by chunk, an end line
@@ -268,5 +268,5 @@ following new transactions:
 
 ## Tech stack
 
-Scala 3.10 · JDK 25 · Cats Effect 3 · fs2 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
+Scala 3.10 · JDK 27 · Cats Effect 3 · fs2 · http4s · circe · log4cats · Logback · munit-cats-effect · React 19 · TypeScript · Vite 8 ·
 Vitest · Testing Library · Streams API (NDJSON)
